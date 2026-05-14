@@ -164,14 +164,19 @@ def make_labels(
 ) -> pd.Series:
     """
     Generates binary labels:
-      1  if the `horizon`-day return is positive
-      0  otherwise
+      1    if the `horizon`-day return is positive
+      0    otherwise
+      NaN  for the last `horizon` rows (future unknown)
 
     The label at t corresponds to the return between t and t+horizon.
+    NaN is preserved so that downstream .dropna() correctly excludes
+    the tail rows that have no valid future price.
     """
     df = _ensure_flat_columns(df)
-    future_return = df[col].shift(-horizon) / df[col] - 1
-    return (future_return > 0).astype(int).rename(f"label_{horizon}d")
+    future_close = df[col].shift(-horizon)
+    label = (future_close > df[col]).astype(float)
+    label[future_close.isna()] = np.nan
+    return label.rename(f"label_{horizon}d")
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +271,7 @@ def make_multi_stock_dataset(
     X, y = X[idx], y[idx]
 
     n_train = int(len(X) * train_ratio)
-    n_val = int(len(X) * (1 - train_ratio) / 2)
+    n_val = (len(X) - n_train) // 2
 
     return {
         "X_train": X[:n_train],

@@ -151,12 +151,8 @@ def generate_ohlc_image(
     W = specs["width"]
     H = specs["height"]
 
-    if include_vol:
-        h_vol = int(H * VOLUME_FRACTION)
-        h_price = H - h_vol
-    else:
-        h_vol = 0
-        h_price = H
+    h_vol = int(H * VOLUME_FRACTION)
+    h_price = H - h_vol
 
     opens = df["Open"].values.astype(float)
     highs = df["High"].values.astype(float)

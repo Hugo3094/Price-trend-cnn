@@ -94,3 +94,4 @@ wandb/
 .pytest_cache/
 .coverage
 htmlcov/
+sandbox.txt
