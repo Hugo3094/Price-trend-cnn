@@ -19,10 +19,13 @@ Each block = Conv(5x3) -> BatchNorm -> LeakyReLU -> MaxPool(2x1)
 Reference: Jiang, Kelly & Xiu (2023), Section II & Appendix
 """
 
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Mirror of ohlc_chart.IMAGE_SPECS — dimensions defined in the paper (Section I)
@@ -244,6 +247,7 @@ def build_cnn(window: int = 20, dropout: float = 0.5) -> PriceCNN:
 # Quick test
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     for w in [5, 20, 60]:
         specs = _IMAGE_SPECS[w]
         H, W = specs["height"], specs["width"]
@@ -253,11 +257,11 @@ if __name__ == "__main__":
         out = model(x)
 
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Window={w:2d}d | Image {H}x{W} | Output {out.shape} | Params {n_params:>10,}")
+        logger.info("Window=%2dd | Image %dx%d | Output %s | Params %10d", w, H, W, out.shape, n_params)
 
-    print("\n=== Grad-CAM test ===")
+    logger.info("=== Grad-CAM test ===")
     model = build_cnn(window=20)
     gradcam = GradCAM(model)
     x = torch.randn(1, 1, 60, 64)
     cam = gradcam.generate(x)
-    print(f"CAM shape: {cam.shape}, min={cam.min():.3f}, max={cam.max():.3f}")
+    logger.info("CAM shape: %s, min=%.3f, max=%.3f", cam.shape, cam.min(), cam.max())

@@ -13,9 +13,11 @@ Reference: Jiang, Kelly & Xiu (2023) — (Re-)Imag(in)ing Price Trends, Journal 
 Usage
 -----
     uv sync
-    uv run python main.py
+    uv run python main.py               # full run
+    TEST=True uv run python main.py     # fast debug run (2 tickers, 2 epochs)
 """
 
+import logging
 import os
 import warnings
 
@@ -60,16 +62,29 @@ from reimagining_trends.models.mlp import build_mlp
 from reimagining_trends.training.train import Trainer, get_device, plot_history, set_seed
 
 # ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
 # Global parameters
 # ---------------------------------------------------------------------------
-TICKERS = DEFAULT_TICKERS
-START = "2010-01-01"
-END = "2022-12-31"
-WINDOW = 20
-HORIZON = 5
-EPOCHS = 30
-BATCH = 64
-PATIENCE = 5
+# Set TEST = True for fast debugging: 2 tickers, short date range, 2 epochs
+TEST = True
+
+TICKERS     = DEFAULT_TICKERS[:2] if TEST else DEFAULT_TICKERS
+START       = "2021-01-01"        if TEST else "2010-01-01"
+END         = "2022-12-31"
+EPOCHS      = 2                   if TEST else 30
+PATIENCE    = 1                   if TEST else 5
+WINDOW      = 20
+HORIZON     = 5
+BATCH       = 64
 RESULTS_DIR = "results"
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -85,16 +100,16 @@ def _save(name: str) -> str:
 # Section 2: Data and representations
 # ---------------------------------------------------------------------------
 def section_data(tickers: list[str]) -> dict[str, pd.DataFrame]:
-    print("=" * 60)
-    print("2. Data and representations")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("2. Data and representations")
+    logger.info("=" * 60)
 
-    print("Downloading data...")
+    logger.info("Downloading data...")
     raw_data = download_ohlcv(tickers, start=START, end=END)
 
     ticker_sample = list(raw_data.keys())[0]
     df_sample = raw_data[ticker_sample]
-    print(f"\nSample — {ticker_sample}: {len(df_sample)} days")
+    logger.info("Sample — %s: %d days", ticker_sample, len(df_sample))
 
     df_ex = df_sample.iloc[-60:].copy()
     df_img = image_scale(df_ex, WINDOW)
@@ -115,9 +130,9 @@ def section_data(tickers: list[str]) -> dict[str, pd.DataFrame]:
     plt.savefig(_save("normalisations.png"), dpi=150, bbox_inches="tight")
     plt.close()
 
-    print("-> Image scale maps all stocks to a common [0,1] range.")
-    print("-> This is the key performance factor identified in the paper (Table IX).")
-    print(f"-> Figure: {_save('normalisations.png')}")
+    logger.info("-> Image scale maps all stocks to a common [0,1] range.")
+    logger.info("-> This is the key performance factor identified in the paper (Table IX).")
+    logger.info("-> Figure: %s", _save("normalisations.png"))
 
     return raw_data
 
@@ -126,9 +141,9 @@ def section_data(tickers: list[str]) -> dict[str, pd.DataFrame]:
 # Section 3: OHLC image generation
 # ---------------------------------------------------------------------------
 def section_images(raw_data: dict[str, pd.DataFrame]) -> None:
-    print("\n" + "=" * 60)
-    print("3. OHLC image generation")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("3. OHLC image generation")
+    logger.info("=" * 60)
 
     ticker_sample = list(raw_data.keys())[0]
     df_sample = raw_data[ticker_sample]
@@ -170,7 +185,7 @@ def section_images(raw_data: dict[str, pd.DataFrame]) -> None:
         img_ds_preview["X_train"], img_ds_preview["y_train"],
         n=12, save_path=_save("image_grid.png"),
     )
-    print(f"Image dataset preview: {img_ds_preview['X_train'].shape[0]:,} training images")
+    logger.info("Image dataset preview: %d training images", img_ds_preview["X_train"].shape[0])
 
 
 # ---------------------------------------------------------------------------
@@ -184,27 +199,27 @@ def section_training(raw_data: dict[str, pd.DataFrame]) -> tuple[dict, dict, dic
     img_ds   : image dataset (CNN)
     trainers : {model_name: Trainer}
     """
-    print("\n" + "=" * 60)
-    print("4. Model training")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("4. Model training")
+    logger.info("=" * 60)
 
-    print("Building datasets...")
+    logger.info("Building datasets...")
     tab_ds = make_multi_stock_dataset(raw_data, window=WINDOW, horizon=HORIZON, scaling="image")
     for split in ["train", "val", "test"]:
         X, y = tab_ds[f"X_{split}"], tab_ds[f"y_{split}"]
-        print(f"  Tab {split:5s}: {X.shape}  {y.mean() * 100:.1f}% UP")
+        logger.info("  Tab %s: %s  %.1f%% UP", split, X.shape, y.mean() * 100)
 
     img_ds = make_image_dataset(raw_data, window=WINDOW, horizon=HORIZON)
     for split in ["train", "val", "test"]:
         X, y = img_ds[f"X_{split}"], img_ds[f"y_{split}"]
-        print(f"  Img {split:5s}: {X.shape}  {y.mean() * 100:.1f}% UP")
+        logger.info("  Img %s: %s  %.1f%% UP", split, X.shape, y.mean() * 100)
 
     N_FEAT = tab_ds["X_train"].shape[2]
-    print(f"\nFeatures per time step: {N_FEAT}")
+    logger.info("Features per time step: %d", N_FEAT)
 
     trainers = {}
 
-    print("\n--- MLP ---")
+    logger.info("--- MLP ---")
     mlp = build_mlp(window=WINDOW, n_features=N_FEAT, hidden_dims=[256, 128, 64])
     trainers["MLP"] = Trainer(mlp, "mlp", save_dir=f"checkpoints/mlp_w{WINDOW}", device=DEVICE)
     hist = trainers["MLP"].fit(
@@ -214,7 +229,7 @@ def section_training(raw_data: dict[str, pd.DataFrame]) -> tuple[dict, dict, dic
     )
     plot_history(hist, "MLP", save_path=_save("history_mlp.png"))
 
-    print("\n--- GRU ---")
+    logger.info("--- GRU ---")
     gru = build_gru(n_features=N_FEAT, hidden_size=128, num_layers=2)
     trainers["GRU"] = Trainer(gru, "gru", save_dir=f"checkpoints/gru_w{WINDOW}", device=DEVICE)
     hist = trainers["GRU"].fit(
@@ -224,7 +239,7 @@ def section_training(raw_data: dict[str, pd.DataFrame]) -> tuple[dict, dict, dic
     )
     plot_history(hist, "GRU", save_path=_save("history_gru.png"))
 
-    print("\n--- LSTM ---")
+    logger.info("--- LSTM ---")
     lstm = build_lstm(n_features=N_FEAT, hidden_size=128, num_layers=2)
     trainers["LSTM"] = Trainer(lstm, "lstm", save_dir=f"checkpoints/lstm_w{WINDOW}", device=DEVICE)
     hist = trainers["LSTM"].fit(
@@ -234,7 +249,7 @@ def section_training(raw_data: dict[str, pd.DataFrame]) -> tuple[dict, dict, dic
     )
     plot_history(hist, "LSTM", save_path=_save("history_lstm.png"))
 
-    print("\n--- CNN ---")
+    logger.info("--- CNN ---")
     cnn = build_cnn(window=WINDOW)
     trainers["CNN"] = Trainer(cnn, "cnn", save_dir=f"checkpoints/cnn_w{WINDOW}", device=DEVICE)
     hist = trainers["CNN"].fit(
@@ -255,9 +270,9 @@ def section_evaluation(
     img_ds: dict,
     trainers: dict[str, Trainer],
 ) -> dict:
-    print("\n" + "=" * 60)
-    print("5. Evaluation and comparison")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("5. Evaluation and comparison")
+    logger.info("=" * 60)
 
     datasets = {"MLP": tab_ds, "GRU": tab_ds, "LSTM": tab_ds, "CNN": img_ds}
     results = {}
@@ -271,14 +286,16 @@ def section_evaluation(
         y_true = ds["y_test"]
         metrics = compute_ml_metrics(y_true, y_pred, y_prob)
         results[name] = {"y_true": y_true, "y_pred": y_pred, "y_proba": y_prob, **metrics}
-        print(f"{name:5s} | acc={metrics['accuracy']:.3f} | auc={metrics['auc']:.3f} | "
-              f"f1={metrics['f1']:.3f} | brier={metrics['brier']:.3f}")
+        logger.info(
+            "%s | acc=%.3f | auc=%.3f | f1=%.3f | brier=%.3f",
+            name, metrics["accuracy"], metrics["auc"], metrics["f1"], metrics["brier"],
+        )
 
     ml_only = {k: {m: v for m, v in r.items() if m in ["accuracy", "f1", "auc", "brier"]}
                for k, r in results.items()}
     cmp_df = compare_models(ml_only)
     plot_model_comparison(cmp_df, save_path=_save("model_comparison.png"))
-    print(cmp_df.to_string())
+    logger.info("\n%s", cmp_df.to_string())
 
     fig, axes = plt.subplots(1, 4, figsize=(18, 4))
     for ax, (name, res) in zip(axes, results.items()):
@@ -313,8 +330,8 @@ def section_evaluation(
     plt.savefig(_save("decile_returns.png"), dpi=150, bbox_inches="tight")
     plt.close()
 
-    print("-> A monotonically increasing gradient indicates the model ranks correctly.")
-    print("-> The CNN produces the steepest gradient (highest H-L spread).")
+    logger.info("-> A monotonically increasing gradient indicates the model ranks correctly.")
+    logger.info("-> The CNN produces the steepest gradient (highest H-L spread).")
 
     return results
 
@@ -327,9 +344,9 @@ def section_interpretability(
     tab_ds: dict,
     cnn_trainer: Trainer,
 ) -> None:
-    print("\n" + "=" * 60)
-    print("6. Interpretability")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("6. Interpretability")
+    logger.info("=" * 60)
 
     # ── Grad-CAM ──────────────────────────────────────────────────────────
     cnn_model = cnn_trainer.model
@@ -377,11 +394,11 @@ def section_interpretability(
     plt.tight_layout()
     plt.savefig(_save("gradcam.png"), dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"-> Grad-CAM: {_save('gradcam.png')}")
+    logger.info("-> Grad-CAM: %s", _save("gradcam.png"))
 
     # ── Attention LSTM ────────────────────────────────────────────────────
     N_FEAT = tab_ds["X_train"].shape[2]
-    print("\nTraining Attention-LSTM...")
+    logger.info("Training Attention-LSTM...")
     attn_lstm = build_attention_lstm(n_features=N_FEAT, hidden_size=128)
     trainer_attn = Trainer(attn_lstm, "lstm", save_dir=f"checkpoints/attn_lstm_w{WINDOW}", device=DEVICE)
     trainer_attn.fit(
@@ -389,7 +406,7 @@ def section_interpretability(
         tab_ds["X_val"], tab_ds["y_val"],
         epochs=EPOCHS, batch_size=BATCH, patience=PATIENCE, verbose=False,
     )
-    print("Trained.")
+    logger.info("Attention-LSTM trained.")
 
     attn_lstm.eval()
     X_sample = torch.tensor(tab_ds["X_test"][:100], dtype=torch.float32).to(DEVICE)
@@ -408,32 +425,39 @@ def section_interpretability(
     plt.tight_layout()
     plt.savefig(_save("attention_weights.png"), dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"-> Attention weights: {_save('attention_weights.png')}")
-    print("-> Recent days (t-1, t-2) generally receive the highest attention.")
+    logger.info("-> Attention weights: %s", _save("attention_weights.png"))
+    logger.info("-> Recent days (t-1, t-2) generally receive the highest attention.")
 
 
 # ---------------------------------------------------------------------------
 # Section 7: Transfer learning
 # ---------------------------------------------------------------------------
 def section_transfer_learning(raw_data: dict[str, pd.DataFrame]) -> None:
-    print("\n" + "=" * 60)
-    print("7. Transfer learning")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("7. Transfer learning")
+    logger.info("=" * 60)
 
-    us_tickers = list(raw_data.keys())[:15]
-    intl_tickers = list(raw_data.keys())[15:]
+    keys = list(raw_data.keys())
+    split_idx = max(1, len(keys) - 5)  # at least 1 ticker per group
+    us_tickers = keys[:split_idx]
+    intl_tickers = keys[split_idx:]
+
+    if not intl_tickers:
+        logger.warning("Not enough tickers for transfer learning split — skipping section.")
+        return
+
     us_data = {k: raw_data[k] for k in us_tickers}
     intl_data = {k: raw_data[k] for k in intl_tickers}
 
-    print(f"US tickers   : {us_tickers}")
-    print(f"Intl tickers : {intl_tickers}")
+    logger.info("US tickers   : %s", us_tickers)
+    logger.info("Intl tickers : %s", intl_tickers)
 
     us_img_ds = make_image_dataset(us_data, window=WINDOW, horizon=HORIZON)
     intl_img_ds = make_image_dataset(intl_data, window=WINDOW, horizon=HORIZON)
-    print(f"\nUS images   : {us_img_ds['X_train'].shape[0]:,} train")
-    print(f"Intl images : {intl_img_ds['X_test'].shape[0]:,} test")
+    logger.info("US images   : %d train", us_img_ds["X_train"].shape[0])
+    logger.info("Intl images : %d test", intl_img_ds["X_test"].shape[0])
 
-    print("\nTraining CNN on US data...")
+    logger.info("Training CNN on US data...")
     cnn_us = build_cnn(window=WINDOW)
     trainer_us = Trainer(cnn_us, "cnn", save_dir=f"checkpoints/cnn_us_w{WINDOW}", device=DEVICE)
     trainer_us.fit(
@@ -442,7 +466,7 @@ def section_transfer_learning(raw_data: dict[str, pd.DataFrame]) -> None:
         epochs=EPOCHS, batch_size=32, patience=PATIENCE, verbose=False,
     )
 
-    print("Training CNN locally on intl data...")
+    logger.info("Training CNN locally on intl data...")
     cnn_local = build_cnn(window=WINDOW)
     trainer_local = Trainer(cnn_local, "cnn", save_dir=f"checkpoints/cnn_local_w{WINDOW}", device=DEVICE)
     trainer_local.fit(
@@ -467,7 +491,7 @@ def section_transfer_learning(raw_data: dict[str, pd.DataFrame]) -> None:
         "Transfer (US -> Intl)": met_transfer,
         "Local retrain": met_local,
     }).T
-    print(df_transfer.round(4).to_string())
+    logger.info("\n%s", df_transfer.round(4).to_string())
 
     fig, ax = plt.subplots(figsize=(8, 3))
     df_transfer.plot(kind="bar", ax=ax, color=["steelblue", "tomato"], edgecolor="white")
@@ -478,17 +502,17 @@ def section_transfer_learning(raw_data: dict[str, pd.DataFrame]) -> None:
     plt.tight_layout()
     plt.savefig(_save("transfer_learning.png"), dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"-> Figure: {_save('transfer_learning.png')}")
-    print("-> Transfer outperforms local retrain on small markets (limited data).")
+    logger.info("-> Figure: %s", _save("transfer_learning.png"))
+    logger.info("-> Transfer outperforms local retrain on small markets (limited data).")
 
 
 # ---------------------------------------------------------------------------
 # Section 8: Final summary
 # ---------------------------------------------------------------------------
 def section_summary(results: dict) -> None:
-    print("\n" + "=" * 60)
-    print("8. Final summary")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("8. Final summary")
+    logger.info("=" * 60)
 
     summary = {
         name: compute_ml_metrics(results[name]["y_true"], results[name]["y_pred"], results[name]["y_proba"])
@@ -496,22 +520,23 @@ def section_summary(results: dict) -> None:
     }
     df_summary = pd.DataFrame(summary).T
     df_summary.index.name = "Model"
-    print("\n" + "=" * 55)
-    print("  SUMMARY TABLE — TEST SET")
-    print("=" * 55)
-    print(df_summary.round(4).to_string())
-    print("=" * 55)
-    print(f"\nAll figures saved to: {RESULTS_DIR}/")
+    logger.info("=" * 55)
+    logger.info("  SUMMARY TABLE — TEST SET")
+    logger.info("=" * 55)
+    logger.info("\n%s", df_summary.round(4).to_string())
+    logger.info("=" * 55)
+    logger.info("All figures saved to: %s/", RESULTS_DIR)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    print(f"Device  : {DEVICE}")
-    print(f"PyTorch : {torch.__version__}")
-    print(f"Tickers : {TICKERS}")
-    print(f"Window  : {WINDOW}d  |  Horizon: {HORIZON}d\n")
+    logger.info("Device  : %s", DEVICE)
+    logger.info("PyTorch : %s", torch.__version__)
+    logger.info("TEST    : %s", TEST)
+    logger.info("Tickers : %s", TICKERS)
+    logger.info("Window  : %dd  |  Horizon: %dd", WINDOW, HORIZON)
 
     raw_data = section_data(TICKERS)
     section_images(raw_data)

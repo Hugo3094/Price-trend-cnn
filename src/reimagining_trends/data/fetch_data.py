@@ -7,11 +7,14 @@ Generates return labels (up/down) for binary classification.
 Reference: Jiang, Kelly & Xiu (2023) - (Re-)Imag(in)ing Price Trends
 """
 
+import logging
 import os
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -63,24 +66,24 @@ def download_ohlcv(
     """
     data = {}
     for ticker in tickers:
-        print(f"  Downloading: {ticker} ...", end=" ")
+        logger.info("Downloading %s ...", ticker)
         try:
             df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
             if df.empty:
-                print("EMPTY — skipped")
+                logger.warning("%s: EMPTY — skipped", ticker)
                 continue
             df = _ensure_flat_columns(df)
             df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
             data[ticker] = df
-            print(f"OK ({len(df)} days)")
+            logger.info("%s: OK (%d days)", ticker, len(df))
         except Exception as e:
-            print(f"ERROR: {e}")
+            logger.error("%s: ERROR — %s", ticker, e)
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         for ticker, df in data.items():
             df.to_csv(os.path.join(save_dir, f"{ticker}.csv"))
-        print(f"\nData saved to: {save_dir}")
+        logger.info("Data saved to: %s", save_dir)
 
     return data
 
@@ -93,7 +96,7 @@ def load_ohlcv(data_dir: str) -> dict[str, pd.DataFrame]:
             ticker = fname.replace(".csv", "")
             df = pd.read_csv(os.path.join(data_dir, fname), index_col=0, parse_dates=True)
             data[ticker] = _ensure_flat_columns(df)
-    print(f"{len(data)} tickers loaded from {data_dir}")
+    logger.info("%d tickers loaded from %s", len(data), data_dir)
     return data
 
 
@@ -282,7 +285,8 @@ def make_multi_stock_dataset(
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== Downloading data ===")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logger.info("=== Downloading data ===")
     raw_data = download_ohlcv(
         tickers=DEFAULT_TICKERS,
         start="2000-01-01",
@@ -290,7 +294,7 @@ if __name__ == "__main__":
         save_dir="data/raw",
     )
 
-    print("\n=== Building tabular dataset (window=20, horizon=5) ===")
+    logger.info("=== Building tabular dataset (window=20, horizon=5) ===")
     dataset = make_multi_stock_dataset(
         data=raw_data,
         window=20,
@@ -301,4 +305,4 @@ if __name__ == "__main__":
         X = dataset[f"X_{split}"]
         y = dataset[f"y_{split}"]
         pos = y.mean() * 100
-        print(f"  {split:5s}: {X.shape}  —  {pos:.1f}% positive")
+        logger.info("  %s: %s  —  %.1f%% positive", split, X.shape, pos)

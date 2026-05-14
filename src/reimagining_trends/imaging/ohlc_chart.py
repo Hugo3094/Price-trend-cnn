@@ -13,12 +13,15 @@ following the exact specification from the paper:
 Reference: Jiang, Kelly & Xiu (2023), Section I
 """
 
+import logging
 import os
 import numpy as np
 import pandas as pd
 from PIL import Image
 from typing import Optional
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +354,8 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from data.fetch_data import download_ohlcv, add_moving_average
 
-    print("=== OHLC image generation test ===")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logger.info("=== OHLC image generation test ===")
 
     raw = download_ohlcv(["AAPL"], start="2020-01-01", end="2022-12-31")
     df = raw["AAPL"]
@@ -359,17 +363,17 @@ if __name__ == "__main__":
 
     window_df = df.iloc[20:40]
     img = generate_ohlc_image(window_df, window=20, include_vol=True, include_ma=True)
-    print(f"Image generated: shape={img.shape}, min={img.min()}, max={img.max()}")
+    logger.info("Image generated: shape=%s, min=%d, max=%d", img.shape, img.min(), img.max())
 
     visualize_sample(img, label=1, title="Test image 20 days — AAPL")
 
-    print("\n=== Building image dataset ===")
+    logger.info("=== Building image dataset ===")
     raw_multi = download_ohlcv(["AAPL", "MSFT", "GOOGL"], start="2015-01-01", end="2022-12-31")
     dataset = make_image_dataset(raw_multi, window=20, horizon=5)
 
     for split in ["train", "val", "test"]:
         X = dataset[f"X_{split}"]
         y = dataset[f"y_{split}"]
-        print(f"  {split:5s}: {X.shape}  —  {y.mean() * 100:.1f}% positive")
+        logger.info("  %s: %s  —  %.1f%% positive", split, X.shape, y.mean() * 100)
 
     visualize_grid(dataset["X_train"], dataset["y_train"], n=16)

@@ -8,8 +8,11 @@ Input  : (batch, window * n_features)  — flattened sequence
 Output : (batch, 2)                     — up/down logits
 """
 
+import logging
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 class MLP(nn.Module):
@@ -77,10 +80,11 @@ def build_mlp(
 # Quick test
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     model = build_mlp(window=20, n_features=6)
-    print(model)
+    logger.info("%s", model)
     x = torch.randn(32, 20, 6)
     out = model(x)
-    print(f"Output shape : {out.shape}")
+    logger.info("Output shape : %s", out.shape)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Parameters   : {n_params:,}")
+    logger.info("Parameters   : %d", n_params)

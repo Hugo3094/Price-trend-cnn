@@ -16,11 +16,14 @@ Visualisations:
   - Grad-CAM overlay
 """
 
+import logging
 import os
 import numpy as np
 import pandas as pd
 from typing import Optional
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 import matplotlib.cm as cm
 from sklearn.metrics import (
     accuracy_score,
@@ -65,10 +68,10 @@ def print_classification_report(
     y_pred: np.ndarray,
     model_name: str = "Model",
 ) -> None:
-    print(f"\n{'=' * 40}")
-    print(f"  {model_name}")
-    print("=" * 40)
-    print(classification_report(y_true, y_pred, target_names=["DOWN", "UP"]))
+    logger.info("=" * 40)
+    logger.info("  %s", model_name)
+    logger.info("=" * 40)
+    logger.info("\n%s", classification_report(y_true, y_pred, target_names=["DOWN", "UP"]))
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +356,8 @@ def full_evaluation(
             )
 
     cmp_df = compare_models(ml_metrics)
-    print("\n=== Global comparison ===")
-    print(cmp_df.to_string())
+    logger.info("=== Global comparison ===")
+    logger.info("\n%s", cmp_df.to_string())
 
     plot_model_comparison(
         cmp_df,

@@ -5,6 +5,7 @@ Unified training pipeline for MLP, LSTM/GRU, and CNN.
 Handles: early stopping, scheduler, logging, best-model checkpointing.
 """
 
+import logging
 import os
 import time
 import json
@@ -14,6 +15,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from typing import Optional
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +133,9 @@ class Trainer:
 
             if verbose:
                 elapsed = time.time() - t0
-                print(
-                    f"Epoch {epoch:3d}/{epochs} | "
-                    f"Train loss={train_loss:.4f} acc={train_acc:.3f} | "
-                    f"Val loss={val_loss:.4f} acc={val_acc:.3f} | "
-                    f"{elapsed:.1f}s"
+                logger.info(
+                    "Epoch %3d/%d | Train loss=%.4f acc=%.3f | Val loss=%.4f acc=%.3f | %.1fs",
+                    epoch, epochs, train_loss, train_acc, val_loss, val_acc, elapsed,
                 )
 
             if val_loss < best_val_loss:
@@ -146,7 +147,7 @@ class Trainer:
                 patience_counter += 1
                 if patience_counter >= patience:
                     if verbose:
-                        print(f"\nEarly stopping at epoch {epoch} (best: {best_epoch})")
+                        logger.info("Early stopping at epoch %d (best: %d)", epoch, best_epoch)
                     break
 
         history_path = os.path.join(self.save_dir, f"{self.model_type}_history.json")
@@ -262,17 +263,18 @@ if __name__ == "__main__":
     from models.cnn import build_cnn
     from imaging.ohlc_chart import make_image_dataset
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     set_seed(42)
     device = get_device()
-    print(f"Device: {device}")
+    logger.info("Device: %s", device)
 
-    print("\n=== Downloading data ===")
+    logger.info("=== Downloading data ===")
     raw = download_ohlcv(["AAPL", "MSFT", "GOOGL"], start="2010-01-01", end="2022-12-31")
 
     WINDOW = 20
     HORIZON = 5
 
-    print("\n=== Training MLP ===")
+    logger.info("=== Training MLP ===")
     tab_ds = make_multi_stock_dataset(raw, WINDOW, HORIZON, scaling="image")
     mlp = build_mlp(window=WINDOW, n_features=6)
     trainer = Trainer(mlp, "mlp", save_dir=f"checkpoints/mlp_w{WINDOW}")
@@ -283,7 +285,7 @@ if __name__ == "__main__":
     )
     plot_history(history, "MLP")
 
-    print("\n=== Training LSTM ===")
+    logger.info("=== Training LSTM ===")
     lstm = build_lstm(n_features=6)
     trainer = Trainer(lstm, "lstm", save_dir=f"checkpoints/lstm_w{WINDOW}")
     history = trainer.fit(
@@ -293,7 +295,7 @@ if __name__ == "__main__":
     )
     plot_history(history, "LSTM")
 
-    print("\n=== Training CNN ===")
+    logger.info("=== Training CNN ===")
     img_ds = make_image_dataset(raw, window=WINDOW, horizon=HORIZON)
     cnn = build_cnn(window=WINDOW)
     trainer = Trainer(cnn, "cnn", save_dir=f"checkpoints/cnn_w{WINDOW}")

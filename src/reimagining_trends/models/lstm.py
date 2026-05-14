@@ -8,9 +8,12 @@ Input  : (batch, window, n_features)
 Output : (batch, 2)  — up/down logits
 """
 
+import logging
 import torch
 import torch.nn as nn
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 
 class RNNClassifier(nn.Module):
@@ -200,24 +203,25 @@ def build_attention_lstm(
 # Quick test
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     batch, seq_len, n_feat = 32, 20, 6
 
-    print("=== LSTM ===")
+    logger.info("=== LSTM ===")
     lstm = build_lstm(n_features=n_feat)
     x = torch.randn(batch, seq_len, n_feat)
     out = lstm(x)
-    print(f"Output : {out.shape}")
-    print(f"Params : {sum(p.numel() for p in lstm.parameters() if p.requires_grad):,}")
+    logger.info("Output : %s", out.shape)
+    logger.info("Params : %d", sum(p.numel() for p in lstm.parameters() if p.requires_grad))
 
-    print("\n=== GRU ===")
+    logger.info("=== GRU ===")
     gru = build_gru(n_features=n_feat)
     out = gru(x)
-    print(f"Output : {out.shape}")
-    print(f"Params : {sum(p.numel() for p in gru.parameters() if p.requires_grad):,}")
+    logger.info("Output : %s", out.shape)
+    logger.info("Params : %d", sum(p.numel() for p in gru.parameters() if p.requires_grad))
 
-    print("\n=== Attention LSTM ===")
+    logger.info("=== Attention LSTM ===")
     attn_lstm = build_attention_lstm(n_features=n_feat)
     logits, weights = attn_lstm(x)
-    print(f"Logits  : {logits.shape}")
-    print(f"Weights : {weights.shape}")
-    print(f"Params  : {sum(p.numel() for p in attn_lstm.parameters() if p.requires_grad):,}")
+    logger.info("Logits  : %s", logits.shape)
+    logger.info("Weights : %s", weights.shape)
+    logger.info("Params  : %d", sum(p.numel() for p in attn_lstm.parameters() if p.requires_grad))
