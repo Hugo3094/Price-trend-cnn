@@ -1,21 +1,26 @@
 """
 metrics.py
 ----------
-Évaluation complète et comparaison des modèles.
+Full evaluation and comparison of MLP, LSTM, and CNN models.
 
-Métriques financières (papier) :
-  - Sharpe ratio annualisé des stratégies decile H-L
-  - Rendement moyen par décile
+Financial metrics (paper):
+  - Annualized Sharpe ratio of decile H-L strategies
+  - Mean return per decile
 
-Métriques ML classiques :
+Standard ML metrics:
   - Accuracy, F1, AUC-ROC, Brier score
 
-Visualisations :
-  - Courbe cumulative des rendements
-  - Heatmap des Sharpe ratios par modèle / fenêtre
+Visualizations:
+  - Cumulative return curves
+  - Model comparison heatmap
+  - Decile return bar charts
   - Grad-CAM overlay
+  - Confusion matrix
+
+Reference: Jiang, Kelly & Xiu (2023) - (Re-)Imag(in)ing Price Trends
 """
 
+import os
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -24,14 +29,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from sklearn.metrics import (
-    accuracy_score, f1_score, roc_auc_score,
-    brier_score_loss, classification_report,
-    confusion_matrix, ConfusionMatrixDisplay,
+    accuracy_score,
+    f1_score,
+    roc_auc_score,
+    brier_score_loss,
+    classification_report,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
 )
 
 
 # ---------------------------------------------------------------------------
-# Métriques ML
+# ML metrics
 # ---------------------------------------------------------------------------
 def compute_ml_metrics(
     y_true:  np.ndarray,
@@ -39,15 +48,17 @@ def compute_ml_metrics(
     y_proba: np.ndarray,
 ) -> dict:
     """
+    Computes standard classification metrics.
+
     Parameters
     ----------
-    y_true  : labels réels (0 ou 1)
-    y_pred  : labels prédits (0 ou 1)
-    y_proba : probabilités de la classe 1 — shape (N,)
+    y_true  : ground truth labels (0 or 1), shape (N,)
+    y_pred  : predicted labels (0 or 1), shape (N,)
+    y_proba : predicted probability of class 1, shape (N,)
 
     Returns
     -------
-    dict avec accuracy, f1, auc, brier
+    dict with keys: accuracy, f1, auc, brier
     """
     return {
         "accuracy": accuracy_score(y_true, y_pred),
@@ -58,68 +69,38 @@ def compute_ml_metrics(
 
 
 def print_classification_report(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
+    y_true:     np.ndarray,
+    y_pred:     np.ndarray,
     model_name: str = "Model",
 ) -> None:
-    print(f"\n{'='*40}")
+    """Prints a formatted sklearn classification report."""
+    print(f"\n{'=' * 40}")
     print(f"  {model_name}")
-    print('='*40)
+    print("=" * 40)
     print(classification_report(y_true, y_pred, target_names=["DOWN", "UP"]))
 
 
 # ---------------------------------------------------------------------------
-# Métriques financières
+# Financial metrics
 # ---------------------------------------------------------------------------
-def decile_portfolio_returns(
-    y_true:  np.ndarray,
-    y_proba: np.ndarray,
-    returns: np.ndarray,
-    n_deciles: int = 10,
-) -> pd.DataFrame:
+def annualized_sharpe(
+    returns:          np.ndarray,
+    periods_per_year: int   = 52,
+    risk_free:        float = 0.0,
+) -> float:
     """
-    Trie les actions en n déciles selon la probabilité prédite d'une hausse,
-    et calcule le rendement moyen par décile.
+    Computes the annualized Sharpe ratio.
 
     Parameters
     ----------
-    y_true   : labels réels
-    y_proba  : P(up) prédite — utilisée pour trier
-    returns  : rendements réalisés (float)
-    n_deciles: nombre de déciles
+    returns          : array of periodic returns
+    periods_per_year : 52 (weekly) | 12 (monthly) | 4 (quarterly)
+                       Default is 52 to match the paper's weekly strategy.
+    risk_free        : annualized risk-free rate (default 0)
 
     Returns
     -------
-    DataFrame avec rendement moyen et Sharpe par décile
-    """
-    df = pd.DataFrame({
-        "prob_up": y_proba,
-        "return":  returns,
-    })
-    df["decile"] = pd.qcut(df["prob_up"], n_deciles, labels=False) + 1
-
-    results = []
-    for d in range(1, n_deciles + 1):
-        subset = df[df["decile"] == d]["return"]
-        ret    = subset.mean()
-        std    = subset.std()
-        sharpe = annualized_sharpe(subset.values)
-        results.append({"decile": d, "mean_return": ret, "std": std, "sharpe": sharpe, "n": len(subset)})
-
-    return pd.DataFrame(results).set_index("decile")
-
-
-def annualized_sharpe(
-    returns:         np.ndarray,
-    periods_per_year: int = 52,    # 52 semaines pour strategy hebdo (comme le papier)
-    risk_free:       float = 0.0,
-) -> float:
-    """
-    Sharpe ratio annualisé.
-
-    Parameters
-    ----------
-    periods_per_year : 52 (hebdo) | 12 (mensuel) | 4 (trimestriel)
+    float — annualized Sharpe ratio, 0.0 if std is zero or NaN
     """
     excess = returns - risk_free / periods_per_year
     mean   = excess.mean()
@@ -129,25 +110,100 @@ def annualized_sharpe(
     return float(mean / std * np.sqrt(periods_per_year))
 
 
-def hl_sharpe(decile_df: pd.DataFrame) -> float:
-    """Sharpe ratio de la stratégie H-L (décile 10 - décile 1)."""
-    high = decile_df.loc[10, "mean_return"] if 10 in decile_df.index else 0
-    low  = decile_df.loc[1,  "mean_return"] if 1  in decile_df.index else 0
-    return high - low   # simplifié — utiliser annualized_sharpe sur la série réelle
+def decile_portfolio_returns(
+    y_proba:          np.ndarray,
+    returns:          np.ndarray,
+    n_deciles:        int = 10,
+    periods_per_year: int = 52,
+) -> pd.DataFrame:
+    """
+    Sorts samples into deciles by predicted up-probability and computes
+    mean return and annualized Sharpe ratio per decile.
+
+    Parameters
+    ----------
+    y_proba          : predicted P(up), shape (N,) — used for sorting
+    returns          : realized returns, shape (N,)
+    n_deciles        : number of deciles (default 10, as in the paper)
+    periods_per_year : annualization factor for Sharpe ratio
+
+    Returns
+    -------
+    DataFrame indexed by decile (1=lowest prob, 10=highest prob)
+    with columns: mean_return, std, sharpe, n
+    """
+    df = pd.DataFrame({
+        "prob_up": y_proba,
+        "return":  returns,
+    })
+    df["decile"] = pd.qcut(df["prob_up"], n_deciles, labels=False) + 1
+
+    results = []
+    for d in range(1, n_deciles + 1):
+        subset = df[df["decile"] == d]["return"].values
+        results.append({
+            "decile":      d,
+            "mean_return": subset.mean(),
+            "std":         subset.std(),
+            "sharpe":      annualized_sharpe(subset, periods_per_year),
+            "n":           len(subset),
+        })
+
+    return pd.DataFrame(results).set_index("decile")
+
+
+def hl_sharpe(
+    decile_df:        pd.DataFrame,
+    y_proba:          np.ndarray,
+    returns:          np.ndarray,
+    n_deciles:        int   = 10,
+    periods_per_year: int   = 52,
+) -> float:
+    """
+    Computes the annualized Sharpe ratio of the H-L (High minus Low) strategy,
+    defined as the return of the top decile minus the return of the bottom decile.
+
+    This matches the paper's main performance metric.
+
+    Parameters
+    ----------
+    decile_df        : output of decile_portfolio_returns()
+    y_proba          : predicted P(up), shape (N,) — used to identify deciles
+    returns          : realized returns, shape (N,)
+    n_deciles        : number of deciles
+    periods_per_year : annualization factor
+
+    Returns
+    -------
+    float — annualized Sharpe ratio of the H-L strategy
+    """
+    df = pd.DataFrame({"prob_up": y_proba, "return": returns})
+    df["decile"] = pd.qcut(df["prob_up"], n_deciles, labels=False) + 1
+
+    high_returns = df[df["decile"] == n_deciles]["return"].values
+    low_returns  = df[df["decile"] == 1]["return"].values
+
+    # H-L return series: long top decile, short bottom decile
+    min_len  = min(len(high_returns), len(low_returns))
+    hl_rets  = high_returns[:min_len] - low_returns[:min_len]
+
+    return annualized_sharpe(hl_rets, periods_per_year)
 
 
 # ---------------------------------------------------------------------------
-# Comparaison des modèles
+# Model comparison
 # ---------------------------------------------------------------------------
 def compare_models(results: dict[str, dict]) -> pd.DataFrame:
     """
+    Builds a comparison DataFrame from per-model metric dictionaries.
+
     Parameters
     ----------
     results : {model_name: {"accuracy": ..., "f1": ..., "auc": ..., "brier": ...}}
 
     Returns
     -------
-    DataFrame de comparaison
+    DataFrame sorted by AUC (descending), indexed by model name
     """
     rows = []
     for name, metrics in results.items():
@@ -157,28 +213,46 @@ def compare_models(results: dict[str, dict]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Visualisations
+# Visualizations
 # ---------------------------------------------------------------------------
 def plot_decile_returns(
     decile_df:  pd.DataFrame,
     model_name: str = "Model",
     save_path:  Optional[str] = None,
 ) -> None:
-    """Barchart des rendements et Sharpe par décile."""
+    """
+    Bar chart of mean return and annualized Sharpe ratio per decile.
+
+    Parameters
+    ----------
+    decile_df  : output of decile_portfolio_returns()
+    model_name : model name for the plot title
+    save_path  : optional path to save the figure
+    """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    colors = ["#d73027" if v < 0 else "#1a9850" for v in decile_df["mean_return"]]
-    axes[0].bar(decile_df.index, decile_df["mean_return"], color=colors, edgecolor="white")
-    axes[0].set_title(f"{model_name} — Rendement moyen par décile")
-    axes[0].set_xlabel("Décile (1=faible prob, 10=forte prob)")
-    axes[0].set_ylabel("Rendement moyen")
+    # Mean return per decile
+    colors_ret = ["#d73027" if v < 0 else "#1a9850"
+                  for v in decile_df["mean_return"]]
+    axes[0].bar(
+        decile_df.index, decile_df["mean_return"],
+        color=colors_ret, edgecolor="white",
+    )
+    axes[0].set_title(f"{model_name} — Mean return per decile")
+    axes[0].set_xlabel("Decile (1=lowest prob, 10=highest prob)")
+    axes[0].set_ylabel("Mean return")
     axes[0].axhline(0, color="black", linewidth=0.8, linestyle="--")
     axes[0].grid(axis="y", alpha=0.3)
 
-    colors_sr = ["#d73027" if v < 0 else "#1a9850" for v in decile_df["sharpe"]]
-    axes[1].bar(decile_df.index, decile_df["sharpe"], color=colors_sr, edgecolor="white")
-    axes[1].set_title(f"{model_name} — Sharpe ratio annualisé par décile")
-    axes[1].set_xlabel("Décile")
+    # Sharpe ratio per decile
+    colors_sr = ["#d73027" if v < 0 else "#1a9850"
+                 for v in decile_df["sharpe"]]
+    axes[1].bar(
+        decile_df.index, decile_df["sharpe"],
+        color=colors_sr, edgecolor="white",
+    )
+    axes[1].set_title(f"{model_name} — Annualized Sharpe ratio per decile")
+    axes[1].set_xlabel("Decile")
     axes[1].set_ylabel("Sharpe ratio")
     axes[1].axhline(0, color="black", linewidth=0.8, linestyle="--")
     axes[1].grid(axis="y", alpha=0.3)
@@ -192,9 +266,16 @@ def plot_decile_returns(
 
 def plot_model_comparison(
     comparison_df: pd.DataFrame,
-    save_path: Optional[str] = None,
+    save_path:     Optional[str] = None,
 ) -> None:
-    """Heatmap de comparaison des métriques ML."""
+    """
+    Heatmap comparing ML metrics across models.
+
+    Parameters
+    ----------
+    comparison_df : output of compare_models()
+    save_path     : optional path to save the figure
+    """
     fig, ax = plt.subplots(figsize=(8, max(3, len(comparison_df) * 0.8)))
 
     data = comparison_df.values.astype(float)
@@ -207,11 +288,13 @@ def plot_model_comparison(
 
     for i in range(len(comparison_df)):
         for j in range(len(comparison_df.columns)):
-            val  = data[i, j]
-            text = ax.text(j, i, f"{val:.3f}", ha="center", va="center",
-                           color="black", fontsize=9, fontweight="bold")
+            ax.text(
+                j, i, f"{data[i, j]:.3f}",
+                ha="center", va="center",
+                color="black", fontsize=9, fontweight="bold",
+            )
 
-    ax.set_title("Comparaison des modèles", fontsize=13, pad=15)
+    ax.set_title("Model Comparison", fontsize=13, pad=15)
     plt.colorbar(im, ax=ax, fraction=0.03)
     plt.tight_layout()
     if save_path:
@@ -225,11 +308,12 @@ def plot_cumulative_returns(
     save_path:  Optional[str] = None,
 ) -> None:
     """
-    Courbe des rendements cumulés de plusieurs stratégies.
+    Plots cumulative returns for multiple H-L strategies.
 
     Parameters
     ----------
-    strategies : {model_name: array de rendements H-L journaliers}
+    strategies : {model_name: array of periodic H-L returns}
+    save_path  : optional path to save the figure
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     colors  = plt.cm.tab10.colors
@@ -239,9 +323,9 @@ def plot_cumulative_returns(
         ax.plot(cum, label=name, color=colors[i % 10], linewidth=1.8)
 
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title("Rendements cumulés — Stratégies H-L", fontsize=13)
-    ax.set_xlabel("Période")
-    ax.set_ylabel("Rendement cumulé")
+    ax.set_title("Cumulative Returns — H-L Strategies", fontsize=13)
+    ax.set_xlabel("Period")
+    ax.set_ylabel("Cumulative return")
     ax.legend(framealpha=0.9)
     ax.grid(alpha=0.3)
     plt.tight_layout()
@@ -252,42 +336,43 @@ def plot_cumulative_returns(
 
 
 def plot_gradcam_overlay(
-    image:    np.ndarray,
-    cam:      np.ndarray,
-    label:    int,
-    pred:     int,
+    image:     np.ndarray,
+    cam:       np.ndarray,
+    label:     int,
+    pred:      int,
     save_path: Optional[str] = None,
 ) -> None:
     """
-    Superpose la carte Grad-CAM sur l'image OHLC originale.
+    Overlays a Grad-CAM heatmap on the original OHLC image.
 
     Parameters
     ----------
-    image  : (H, W)  — image originale [0,1]
-    cam    : (H, W)  — carte de chaleur [0,1]
-    label  : label réel
-    pred   : label prédit
+    image     : (H, W) original image, values in [0, 1]
+    cam       : (H, W) Grad-CAM heatmap, values in [0, 1]
+    label     : ground truth label (0=DOWN, 1=UP)
+    pred      : predicted label (0=DOWN, 1=UP)
+    save_path : optional path to save the figure
     """
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
     axes[0].imshow(image, cmap="gray", aspect="auto", interpolation="nearest")
-    axes[0].set_title("Image OHLC originale")
+    axes[0].set_title("Original OHLC image")
     axes[0].axis("off")
 
     axes[1].imshow(cam, cmap="jet", aspect="auto", interpolation="nearest")
-    axes[1].set_title("Grad-CAM")
+    axes[1].set_title("Grad-CAM heatmap")
     axes[1].axis("off")
 
-    # Overlay
-    rgb = np.stack([image, image, image], axis=-1)
+    # Overlay: blend grayscale image with colormap heatmap
+    rgb         = np.stack([image, image, image], axis=-1)
     cam_colored = cm.jet(cam)[..., :3]
-    overlay = 0.5 * rgb + 0.5 * cam_colored
+    overlay     = 0.5 * rgb + 0.5 * cam_colored
+    correct     = "✓" if label == pred else "✗"
+    color       = "green" if label == pred else "red"
     axes[2].imshow(overlay, aspect="auto", interpolation="nearest")
-    correct = "✓" if label == pred else "✗"
-    color   = "green" if label == pred else "red"
     axes[2].set_title(
-        f"Overlay — Réel: {'UP' if label==1 else 'DOWN'} | "
-        f"Prédit: {'UP' if pred==1 else 'DOWN'} {correct}",
+        f"Overlay — True: {'UP' if label == 1 else 'DOWN'} | "
+        f"Pred: {'UP' if pred == 1 else 'DOWN'} {correct}",
         color=color,
     )
     axes[2].axis("off")
@@ -305,11 +390,21 @@ def plot_confusion_matrix(
     model_name: str = "Model",
     save_path:  Optional[str] = None,
 ) -> None:
+    """
+    Plots and optionally saves a confusion matrix.
+
+    Parameters
+    ----------
+    y_true     : ground truth labels
+    y_pred     : predicted labels
+    model_name : model name for the plot title
+    save_path  : optional path to save the figure
+    """
     cm_arr = confusion_matrix(y_true, y_pred)
     disp   = ConfusionMatrixDisplay(cm_arr, display_labels=["DOWN", "UP"])
     fig, ax = plt.subplots(figsize=(5, 4))
     disp.plot(ax=ax, cmap="Blues", colorbar=False)
-    ax.set_title(f"Matrice de confusion — {model_name}")
+    ax.set_title(f"Confusion Matrix — {model_name}")
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -318,50 +413,85 @@ def plot_confusion_matrix(
 
 
 # ---------------------------------------------------------------------------
-# Rapport complet
+# Full evaluation report
 # ---------------------------------------------------------------------------
 def full_evaluation(
     model_results: dict[str, dict],
     save_dir:      Optional[str] = None,
-) -> None:
+    periods_per_year: int = 52,
+) -> pd.DataFrame:
     """
-    Génère un rapport complet : tableau comparatif + figures.
+    Generates a complete evaluation report: comparison table + figures.
 
     Parameters
     ----------
     model_results : {
-        "MLP":  {"y_true": ..., "y_pred": ..., "y_proba": ..., "returns": ...},
+        "MLP":  {
+            "y_true":  np.ndarray,
+            "y_pred":  np.ndarray,
+            "y_proba": np.ndarray,
+            "returns": np.ndarray,  # optional — realized returns for Sharpe
+        },
         "LSTM": {...},
         "CNN":  {...},
     }
+    save_dir         : directory to save all figures (optional)
+    periods_per_year : annualization factor (52=weekly, 12=monthly, 4=quarterly)
+
+    Returns
+    -------
+    DataFrame with ML metrics comparison across models
     """
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
 
     ml_metrics = {}
+    hl_sharpes = {}
+
     for name, res in model_results.items():
+        # ML metrics
         ml_metrics[name] = compute_ml_metrics(
             res["y_true"], res["y_pred"], res["y_proba"]
         )
         print_classification_report(res["y_true"], res["y_pred"], model_name=name)
 
+        # Financial metrics (only if realized returns are provided)
         if "returns" in res:
-            dec = decile_portfolio_returns(res["y_true"], res["y_proba"], res["returns"])
+            dec = decile_portfolio_returns(
+                res["y_proba"], res["returns"],
+                periods_per_year=periods_per_year,
+            )
+            hl_sharpes[name] = hl_sharpe(
+                dec, res["y_proba"], res["returns"],
+                periods_per_year=periods_per_year,
+            )
             plot_decile_returns(
-                dec, model_name=name,
-                save_path=os.path.join(save_dir, f"{name}_deciles.png") if save_dir else None,
+                dec,
+                model_name=name,
+                save_path=os.path.join(save_dir, f"{name}_deciles.png")
+                          if save_dir else None,
+            )
+            plot_confusion_matrix(
+                res["y_true"], res["y_pred"],
+                model_name=name,
+                save_path=os.path.join(save_dir, f"{name}_confusion.png")
+                          if save_dir else None,
             )
 
+    # Global comparison table
     cmp_df = compare_models(ml_metrics)
-    print("\n=== Comparaison globale ===")
+    print("\n=== Global Model Comparison ===")
     print(cmp_df.to_string())
+
+    if hl_sharpes:
+        print("\n=== H-L Annualized Sharpe Ratios ===")
+        for name, sr in hl_sharpes.items():
+            print(f"  {name:10s} : {sr:.4f}")
 
     plot_model_comparison(
         cmp_df,
-        save_path=os.path.join(save_dir, "model_comparison.png") if save_dir else None,
+        save_path=os.path.join(save_dir, "model_comparison.png")
+                  if save_dir else None,
     )
 
     return cmp_df
-
-
-import os
