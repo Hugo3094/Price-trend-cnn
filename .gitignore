@@ -27,8 +27,8 @@ ipython_config.py
 # =============================================================================
 # Data — ne jamais versionner les données brutes
 # =============================================================================
-data/raw/
-data/processed/
+src/reimagining_trends/data/raw/
+src/reimagining_trends/data/processed/
 *.csv
 *.parquet
 *.h5
@@ -50,6 +50,7 @@ checkpoints/
 # =============================================================================
 outputs/
 figures/
+results/
 *.png
 *.jpg
 *.jpeg
