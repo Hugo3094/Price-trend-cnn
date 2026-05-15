@@ -1,55 +1,41 @@
 """
 ohlc_chart.py
 -------------
-Generates black-and-white OHLC images from price data,
-following the exact specification from the paper:
-
-  - Black background, white objects
-  - Each day = 3 pixels wide (centre bar + open mark + close mark)
-  - Image height normalised: max High -> top, min Low -> bottom
-  - Volume in the bottom 1/5 of the image
-  - Moving average overlaid (1 pixel per day)
-
-Reference: Jiang, Kelly & Xiu (2023), Section I
+Generate black-and-white OHLC images from price data.
 """
 
 import logging
 import os
+from typing import Optional
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
-from typing import Optional
-import matplotlib.pyplot as plt
+
+from reimagining_trends.data.fetch_data import (
+    DEFAULT_TRAIN_END,
+    DEFAULT_VAL_END,
+)
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Image dimensions (paper: 32x15 for 5d, 64x60 for 20d, 96x180 for 60d)
-# ---------------------------------------------------------------------------
 IMAGE_SPECS = {
-    5:  {"width": 32,  "height": 15},
-    20: {"width": 64,  "height": 60},
-    60: {"width": 96,  "height": 180},
+    5: {"width": 32, "height": 15},
+    20: {"width": 64, "height": 60},
+    60: {"width": 96, "height": 180},
 }
 
 VOLUME_FRACTION = 0.20
 
 
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
 def _ensure_flat_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Flattens yfinance MultiIndex columns to their price-type level."""
+    """Flatten yfinance MultiIndex columns if needed."""
     if isinstance(df.columns, pd.MultiIndex):
         df = df.copy()
         df.columns = df.columns.get_level_values(0)
     return df
 
 
-# ---------------------------------------------------------------------------
-# Normalisation and drawing helpers
-# ---------------------------------------------------------------------------
 def _normalize_prices(
     opens: np.ndarray,
     highs: np.ndarray,
@@ -57,18 +43,20 @@ def _normalize_prices(
     closes: np.ndarray,
     ma: Optional[np.ndarray] = None,
 ) -> tuple:
-    """
-    Normalises prices to [0, 1]:
-      - 1 corresponds to the max of the High values (or MA if higher)
-      - 0 corresponds to the min of the Low values
-    """
+    """Normalize prices to [0, 1]."""
     all_prices = np.concatenate([highs, lows])
+
     if ma is not None:
-        all_prices = np.concatenate([all_prices, ma[~np.isnan(ma)]])
+        valid_ma = ma[~np.isnan(ma)]
+        if len(valid_ma) > 0:
+            all_prices = np.concatenate([all_prices, valid_ma])
 
     p_max = all_prices.max()
     p_min = all_prices.min()
-    denom = p_max - p_min if p_max != p_min else 1.0
+
+    denom = p_max - p_min
+    if denom == 0:
+        denom = 1.0
 
     def norm(x):
         return (x - p_min) / denom
@@ -83,46 +71,51 @@ def _normalize_prices(
 
 
 def _normalize_volume(volumes: np.ndarray) -> np.ndarray:
-    """Normalises volume to [0, 1]."""
+    """Normalize volume to [0, 1]."""
     v_max = volumes.max()
-    return volumes / v_max if v_max > 0 else volumes
 
+    if v_max <= 1e-8:
+        return np.zeros_like(volumes)
 
-def _to_px(v: float, h: int) -> int:
-    """Converts a normalised value [0,1] to a pixel coordinate (y-axis inverted)."""
-    return int((1.0 - np.clip(v, 0, 1)) * (h - 1))
+    return volumes / v_max
 
 
 def _draw_line(
     img: np.ndarray,
-    x0: int, y0: int,
-    x1: int, y1: int,
-    h: int, w: int,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    h: int,
+    w: int,
 ) -> None:
-    """Bresenham line algorithm for connecting two MA points."""
+    """Draw a line with Bresenham algorithm."""
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
+
     sx = 1 if x0 < x1 else -1
     sy = 1 if y0 < y1 else -1
+
     err = dx - dy
 
     while True:
         if 0 <= x0 < w and 0 <= y0 < h:
             img[y0, x0] = 255
+
         if x0 == x1 and y0 == y1:
             break
+
         e2 = 2 * err
+
         if e2 > -dy:
             err -= dy
             x0 += sx
+
         if e2 < dx:
             err += dx
             y0 += sy
 
 
-# ---------------------------------------------------------------------------
-# Single-window OHLC image generation
-# ---------------------------------------------------------------------------
 def generate_ohlc_image(
     df: pd.DataFrame,
     window: int = 20,
@@ -130,183 +123,391 @@ def generate_ohlc_image(
     include_ma: bool = True,
 ) -> np.ndarray:
     """
-    Generates a uint8 OHLC numpy image (H, W) for a `window`-day window.
-
-    Parameters
-    ----------
-    df          : DataFrame with columns Open/High/Low/Close/Volume (window rows)
-    window      : 5, 20, or 60
-    include_vol : draw volume bars
-    include_ma  : draw moving average
-
-    Returns
-    -------
-    np.ndarray of shape (height, width) in uint8 — 0=black, 255=white
+    Generate one OHLC image from a price window.
     """
-    assert len(df) == window, f"DataFrame must contain exactly {window} rows."
-    assert window in IMAGE_SPECS, f"window must be one of {list(IMAGE_SPECS.keys())}"
+    assert len(df) == window
+    assert window in IMAGE_SPECS
 
     df = _ensure_flat_columns(df)
-    specs = IMAGE_SPECS[window]
-    W = specs["width"]
-    H = specs["height"]
 
-    h_vol = int(H * VOLUME_FRACTION)
-    h_price = H - h_vol
+    specs = IMAGE_SPECS[window]
+
+    width = specs["width"]
+    height = specs["height"]
+
+    volume_height = int(height * VOLUME_FRACTION)
+    price_height = height - volume_height
 
     opens = df["Open"].values.astype(float)
     highs = df["High"].values.astype(float)
     lows = df["Low"].values.astype(float)
     closes = df["Close"].values.astype(float)
-    volumes = df["Volume"].values.astype(float) if include_vol else None
+
+    volumes = (
+        df["Volume"].values.astype(float)
+        if include_vol
+        else None
+    )
 
     ma = None
     if include_ma and "MA" in df.columns:
         ma = df["MA"].values.astype(float)
 
     opens_n, highs_n, lows_n, closes_n, ma_n = _normalize_prices(
-        opens, highs, lows, closes, ma
+        opens,
+        highs,
+        lows,
+        closes,
+        ma,
     )
 
-    img = np.zeros((H, W), dtype=np.uint8)
+    img = np.zeros((height, width), dtype=np.uint8)
 
-    # Each day occupies 3 pixels wide: [open mark | centre bar | close mark]
     day_width = 3
-    x_start = (W - window * day_width) // 2
+    x_start = (width - window * day_width) // 2
 
+    def to_px(value: float, h: int) -> int:
+        return int((1.0 - np.clip(value, 0, 1)) * (h - 1))
+
+    # Draw OHLC bars only inside price region
     for i in range(window):
         x_open = x_start + i * day_width
         x_bar = x_start + i * day_width + 1
         x_close = x_start + i * day_width + 2
 
-        if x_close >= W:
+        if x_close >= width:
             break
 
-        y_high = _to_px(highs_n[i], h_price)
-        y_low = _to_px(lows_n[i], h_price)
-        y_open = _to_px(opens_n[i], h_price)
-        y_close = _to_px(closes_n[i], h_price)
+        y_high = to_px(highs_n[i], price_height)
+        y_low = to_px(lows_n[i], price_height)
+        y_open = to_px(opens_n[i], price_height)
+        y_close = to_px(closes_n[i], price_height)
 
-        img[y_high:y_low + 1, x_bar] = 255  # high-low bar
-        img[y_open, x_open] = 255            # open mark
-        img[y_close, x_close] = 255          # close mark
+        y_high = np.clip(y_high, 0, price_height - 1)
+        y_low = np.clip(y_low, 0, price_height - 1)
+        y_open = np.clip(y_open, 0, price_height - 1)
+        y_close = np.clip(y_close, 0, price_height - 1)
 
+        img[y_high:y_low + 1, x_bar] = 255
+        img[y_open, x_open] = 255
+        img[y_close, x_close] = 255
+
+    # Moving average only inside price region
     if ma_n is not None:
         prev_px = None
+
         for i in range(window):
             if np.isnan(ma_n[i]):
+                prev_px = None
                 continue
+
             x = x_start + i * day_width + 1
-            y = _to_px(ma_n[i], h_price)
-            if 0 <= x < W and 0 <= y < h_price:
+            y = to_px(ma_n[i], price_height)
+
+            y = np.clip(y, 0, price_height - 1)
+
+            if 0 <= x < width:
                 img[y, x] = 255
+
                 if prev_px is not None:
                     x0, y0 = prev_px
-                    _draw_line(img, x0, y0, x, y, h_price, W)
+                    _draw_line(
+                        img,
+                        x0,
+                        y0,
+                        x,
+                        y,
+                        price_height,
+                        width,
+                    )
+
             prev_px = (x, y)
 
+    # Volume strictly inside bottom region
     if include_vol and volumes is not None:
         vol_n = _normalize_volume(volumes)
+
         for i in range(window):
             x_bar = x_start + i * day_width + 1
-            if x_bar >= W:
+
+            if x_bar >= width:
                 break
-            bar_h = int(vol_n[i] * h_vol)
+
+            bar_h = int(vol_n[i] * volume_height)
+
             if bar_h > 0:
-                y_top = H - bar_h
-                img[y_top:H, x_bar] = 255
+                y_top = height - bar_h
+                img[y_top:height, x_bar] = 255
 
     return img
 
 
-# ---------------------------------------------------------------------------
-# Full image dataset
-# ---------------------------------------------------------------------------
+def _ratio_split_image_dataset(
+    data: dict[str, pd.DataFrame],
+    window: int,
+    horizon: int,
+    include_vol: bool,
+    include_ma: bool,
+    train_ratio: float,
+    val_ratio: float,
+    seed: int,
+) -> dict:
+    """Backward-compatible random split for tests."""
+    rng = np.random.default_rng(seed)
+
+    specs = IMAGE_SPECS[window]
+    height = specs["height"]
+    width = specs["width"]
+
+    X_all = []
+    y_all = []
+
+    for _, df in data.items():
+        df = _ensure_flat_columns(df).copy()
+
+        if include_ma:
+            df["MA"] = df["Close"].rolling(window).mean()
+            df = df.dropna(subset=["MA"])
+
+        closes = df["Close"].values
+
+        for i in range(window, len(df) - horizon):
+            window_df = df.iloc[i - window:i]
+
+            current_close = closes[i]
+            future_close = closes[i + horizon]
+
+            label = int(future_close > current_close)
+
+            img = generate_ohlc_image(
+                window_df,
+                window=window,
+                include_vol=include_vol,
+                include_ma=include_ma,
+            )
+
+            X_all.append(img)
+            y_all.append(label)
+
+    X = np.array(X_all, dtype=np.float32) / 255.0
+    X = X[:, :, :, np.newaxis]
+
+    y = np.array(y_all, dtype=np.int64)
+
+    idx = rng.permutation(len(X))
+    X = X[idx]
+    y = y[idx]
+
+    n_train = int(len(X) * train_ratio)
+    n_val = int(len(X) * val_ratio)
+
+    return {
+        "X_train": X[:n_train],
+        "y_train": y[:n_train],
+        "X_val": X[n_train:n_train + n_val],
+        "y_val": y[n_train:n_train + n_val],
+        "X_test": X[n_train + n_val:],
+        "y_test": y[n_train + n_val:],
+        "image_shape": (height, width, 1),
+        "window": window,
+        "horizon": horizon,
+    }
+
+
 def make_image_dataset(
     data: dict[str, pd.DataFrame],
     window: int = 20,
     horizon: int = 5,
     include_vol: bool = True,
     include_ma: bool = True,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15,
+    train_ratio: Optional[float] = None,
+    val_ratio: Optional[float] = None,
+    train_end: Optional[str] = DEFAULT_TRAIN_END,
+    val_end: Optional[str] = DEFAULT_VAL_END,
+    seed: int = 42,
+    verbose: bool = True,
 ) -> dict:
     """
-    Generates the image dataset + labels for ALL tickers.
-
-    Returns
-    -------
-    dict with X_train/val/test (N, H, W, 1) and y_train/val/test
+    Generate the full image dataset.
     """
-    X_list, y_list = [], []
+    if val_ratio is None:
+        val_ratio = 0.15
+
+    if train_ratio is not None:
+        return _ratio_split_image_dataset(
+            data=data,
+            window=window,
+            horizon=horizon,
+            include_vol=include_vol,
+            include_ma=include_ma,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            seed=seed,
+        )
+
+    all_dates = pd.concat([df.index.to_series() for df in data.values()])
+
+    use_ratio_fallback = (
+        not all(isinstance(df.index, pd.DatetimeIndex) for df in data.values())
+        or train_end is None
+        or val_end is None
+        or all_dates.max() <= pd.Timestamp(train_end)
+        or all_dates.min() > pd.Timestamp(train_end)
+        or all_dates.min() > pd.Timestamp(val_end)
+    )
+
+    if use_ratio_fallback:
+        return _ratio_split_image_dataset(
+            data=data,
+            window=window,
+            horizon=horizon,
+            include_vol=include_vol,
+            include_ma=include_ma,
+            train_ratio=0.70,
+            val_ratio=val_ratio,
+            seed=seed,
+        )
+
+    rng = np.random.default_rng(seed)
+
     specs = IMAGE_SPECS[window]
-    H, W = specs["height"], specs["width"]
+    height = specs["height"]
+    width = specs["width"]
 
-    for ticker, df in data.items():
-        df = _ensure_flat_columns(df)
+    buckets = {
+        "train": ([], []),
+        "val": ([], []),
+        "test": ([], []),
+    }
+
+    skipped = 0
+
+    for _, df in data.items():
+        df = _ensure_flat_columns(df).copy()
+
         if include_ma:
-            df = df.copy()
             df["MA"] = df["Close"].rolling(window).mean()
-            df = df.dropna()
+            df = df.dropna(subset=["MA"])
 
-        n = len(df)
-        if n < window + horizon:
-            continue
+        splits = {
+            "train": df[df.index <= train_end],
+            "val": df[(df.index > train_end) & (df.index <= val_end)],
+            "test": df[df.index > val_end],
+        }
 
-        for i in range(window, n - horizon):
-            window_df = df.iloc[i - window:i]
-            future_ret = df["Close"].iloc[i + horizon - 1] / df["Close"].iloc[i - 1] - 1
-            label = int(future_ret > 0)
+        for split_name, df_split in splits.items():
+            min_len = window + horizon
 
-            try:
-                img = generate_ohlc_image(window_df, window, include_vol, include_ma)
-                X_list.append(img)
-                y_list.append(label)
-            except Exception:
+            if len(df_split) < min_len:
+                skipped += 1
                 continue
 
-    if not X_list:
-        raise ValueError("No images generated.")
+            closes = df_split["Close"].values
+            n = len(df_split)
 
-    X = np.array(X_list, dtype=np.float32) / 255.0
-    X = X[:, :, :, np.newaxis]  # (N, H, W, 1)
-    y = np.array(y_list, dtype=np.int64)
+            for i in range(window, n - horizon):
+                window_df = df_split.iloc[i - window:i]
 
-    idx = np.random.permutation(len(X))
-    X, y = X[idx], y[idx]
+                current_close = closes[i]
+                future_close = closes[i + horizon]
 
-    n1 = int(len(X) * train_ratio)
-    n2 = int(len(X) * (train_ratio + val_ratio))
+                label = int(future_close > current_close)
+
+                try:
+                    img = generate_ohlc_image(
+                        window_df,
+                        window=window,
+                        include_vol=include_vol,
+                        include_ma=include_ma,
+                    )
+
+                    buckets[split_name][0].append(img)
+                    buckets[split_name][1].append(label)
+
+                except Exception:
+                    skipped += 1
+
+    if verbose and skipped > 0:
+        logger.info("%d windows skipped", skipped)
+
+    def concat_bucket(key: str):
+        X_list, y_list = buckets[key]
+
+        if not X_list:
+            raise ValueError(
+                f"Split '{key}' is empty. "
+                f"Check train_end='{train_end}', "
+                f"val_end='{val_end}'."
+            )
+
+        X = np.array(X_list, dtype=np.float32) / 255.0
+        X = X[:, :, :, np.newaxis]
+
+        y = np.array(y_list, dtype=np.int64)
+
+        return X, y
+
+    X_train, y_train = concat_bucket("train")
+    X_val, y_val = concat_bucket("val")
+    X_test, y_test = concat_bucket("test")
+
+    idx = rng.permutation(len(X_train))
+    X_train = X_train[idx]
+    y_train = y_train[idx]
+
+    if verbose:
+        for split_name, X, y in [
+            ("train", X_train, y_train),
+            ("val", X_val, y_val),
+            ("test", X_test, y_test),
+        ]:
+            logger.info(
+                "%s: %s — %.1f%% positive labels",
+                split_name,
+                X.shape,
+                y.mean() * 100,
+            )
 
     return {
-        "X_train": X[:n1],   "y_train": y[:n1],
-        "X_val":   X[n1:n2], "y_val":   y[n1:n2],
-        "X_test":  X[n2:],   "y_test":  y[n2:],
-        "image_shape": (H, W, 1),
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_val": X_val,
+        "y_val": y_val,
+        "X_test": X_test,
+        "y_test": y_test,
+        "image_shape": (height, width, 1),
         "window": window,
         "horizon": horizon,
     }
 
 
-# ---------------------------------------------------------------------------
-# Visualisation
-# ---------------------------------------------------------------------------
 def visualize_sample(
     img: np.ndarray,
     label: int,
     title: Optional[str] = None,
     save_path: Optional[str] = None,
 ) -> None:
-    """Displays a single OHLC image with its label."""
+    """Display one OHLC image."""
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.imshow(img.squeeze(), cmap="gray", aspect="auto", interpolation="nearest")
+
+    ax.imshow(
+        img.squeeze(),
+        cmap="gray",
+        aspect="auto",
+        interpolation="nearest",
+    )
+
     color = "green" if label == 1 else "red"
     lbl = "UP ↑" if label == 1 else "DOWN ↓"
-    ax.set_title(title or f"Label: {lbl}", color=color, fontsize=12)
+
+    ax.set_title(title or f"Label: {lbl}", color=color)
     ax.axis("off")
+
     plt.tight_layout()
+
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
+
     plt.show()
     plt.close()
 
@@ -317,59 +518,49 @@ def visualize_grid(
     n: int = 16,
     save_path: Optional[str] = None,
 ) -> None:
-    """Displays a grid of n images with their labels."""
+    """Display a grid of OHLC images."""
     n = min(n, len(X))
+
     cols = 4
     rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 2.5))
+
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(cols * 3, rows * 2.5),
+    )
+
     axes = axes.flatten()
 
     for i in range(n):
         ax = axes[i]
+
         color = "green" if y[i] == 1 else "red"
-        ax.imshow(X[i].squeeze(), cmap="gray", aspect="auto", interpolation="nearest")
-        ax.set_title("UP ↑" if y[i] == 1 else "DOWN ↓", color=color, fontsize=9)
+
+        ax.imshow(
+            X[i].squeeze(),
+            cmap="gray",
+            aspect="auto",
+            interpolation="nearest",
+        )
+
+        ax.set_title(
+            "UP ↑" if y[i] == 1 else "DOWN ↓",
+            color=color,
+            fontsize=9,
+        )
+
         ax.axis("off")
 
     for j in range(n, len(axes)):
         axes[j].axis("off")
 
     fig.suptitle("OHLC image samples", fontsize=13, y=1.02)
+
     plt.tight_layout()
+
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
+
     plt.show()
     plt.close()
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from data.fetch_data import download_ohlcv, add_moving_average
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    logger.info("=== OHLC image generation test ===")
-
-    raw = download_ohlcv(["AAPL"], start="2020-01-01", end="2022-12-31")
-    df = raw["AAPL"]
-    df = add_moving_average(df, window=20)
-
-    window_df = df.iloc[20:40]
-    img = generate_ohlc_image(window_df, window=20, include_vol=True, include_ma=True)
-    logger.info("Image generated: shape=%s, min=%d, max=%d", img.shape, img.min(), img.max())
-
-    visualize_sample(img, label=1, title="Test image 20 days — AAPL")
-
-    logger.info("=== Building image dataset ===")
-    raw_multi = download_ohlcv(["AAPL", "MSFT", "GOOGL"], start="2015-01-01", end="2022-12-31")
-    dataset = make_image_dataset(raw_multi, window=20, horizon=5)
-
-    for split in ["train", "val", "test"]:
-        X = dataset[f"X_{split}"]
-        y = dataset[f"y_{split}"]
-        logger.info("  %s: %s  —  %.1f%% positive", split, X.shape, y.mean() * 100)
-
-    visualize_grid(dataset["X_train"], dataset["y_train"], n=16)
