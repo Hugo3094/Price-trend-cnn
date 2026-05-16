@@ -112,6 +112,8 @@ class Config:
         self.checkpoints_dir: str = "checkpoints"
 
         # ── DATA defaults ──────────────────────────────────────────────────
+        self.data_source: str = "yahoo"   # "yahoo" | "parquet"
+        self.parquet_path: Optional[str] = None
         self.tickers: List[str] = [
             "AAPL", "MSFT", "GOOGL", "AMZN", "META",
             "TSLA", "JPM", "GS", "BAC", "WMT",
@@ -183,6 +185,15 @@ class Config:
 
         # DATA
         d = cfg.get("DATA", {})
+        if d.get("DATA_SOURCE") is not None:
+            self.data_source = d["DATA_SOURCE"]
+        if "PARQUET_PATH" in d:
+            raw = d["PARQUET_PATH"]
+            if raw is not None:
+                p = Path(raw)
+                self.parquet_path = str(p if p.is_absolute() else self.ROOT_DIR / p)
+            else:
+                self.parquet_path = None
         if d.get("TICKERS"):
             self.tickers = list(d["TICKERS"])
         if d.get("START") is not None:

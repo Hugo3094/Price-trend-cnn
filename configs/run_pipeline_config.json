@@ -6,6 +6,8 @@
     "CHECKPOINTS_DIR": "checkpoints"
   },
   "DATA": {
+    "DATA_SOURCE": "parquet",
+    "PARQUET_PATH": "data/wrds_gross_query.parquet",
     "TICKERS": [
       "AAPL", "MSFT", "GOOGL", "AMZN", "META",
       "TSLA", "JPM", "GS", "BAC", "WMT",

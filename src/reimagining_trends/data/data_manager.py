@@ -15,6 +15,7 @@ import pandas as pd
 from reimagining_trends.data.fetch_data import (
     download_ohlcv,
     load_ohlcv,
+    load_parquet,
     make_multi_stock_dataset,
 )
 from reimagining_trends.imaging.ohlc_chart import make_image_dataset
@@ -47,18 +48,40 @@ class DataManager:
     # ------------------------------------------------------------------
 
     def download(self) -> dict[str, pd.DataFrame]:
-        """Download OHLCV data for all configured tickers."""
-        logger.info(
-            "Downloading %d tickers from %s to %s",
-            len(self.cfg.tickers), self.cfg.start, self.cfg.end,
-        )
-        self.raw_data = download_ohlcv(
-            tickers=self.cfg.tickers,
-            start=self.cfg.start,
-            end=self.cfg.end,
-            save_dir=self.cfg.data_save_dir,
-        )
-        logger.info("Downloaded %d tickers successfully.", len(self.raw_data))
+        """
+        Load OHLCV data from the configured source.
+
+        - ``data_source = "yahoo"``   — fetches live from Yahoo Finance
+        - ``data_source = "parquet"`` — reads a local WRDS-style Parquet file
+        """
+        if self.cfg.data_source == "parquet":
+            if not self.cfg.parquet_path:
+                raise ValueError(
+                    "data_source='parquet' requires parquet_path to be set in the config."
+                )
+            logger.info("Loading parquet: %s", self.cfg.parquet_path)
+            self.raw_data = load_parquet(
+                self.cfg.parquet_path,
+                start=self.cfg.start,
+                end=self.cfg.end,
+            )
+            if self.cfg.test_mode:
+                keys = list(self.raw_data.keys())[:2]
+                self.raw_data = {k: self.raw_data[k] for k in keys}
+                logger.info("TEST_MODE: limited to %d tickers from parquet.", len(self.raw_data))
+        else:
+            logger.info(
+                "Downloading %d tickers from Yahoo Finance (%s → %s)",
+                len(self.cfg.tickers), self.cfg.start, self.cfg.end,
+            )
+            self.raw_data = download_ohlcv(
+                tickers=self.cfg.tickers,
+                start=self.cfg.start,
+                end=self.cfg.end,
+                save_dir=self.cfg.data_save_dir,
+            )
+
+        logger.info("Data loaded: %d tickers.", len(self.raw_data))
         return self.raw_data
 
     def load(self, data_dir: str) -> dict[str, pd.DataFrame]:

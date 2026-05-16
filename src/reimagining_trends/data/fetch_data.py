@@ -100,6 +100,69 @@ def load_ohlcv(data_dir: str) -> dict[str, pd.DataFrame]:
     return data
 
 
+def load_parquet(
+    path: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Loads OHLCV data from a WRDS-style long-format Parquet file.
+
+    Expected schema (case-insensitive):
+      date, ticker, open, high, low, close, volume  (+ optional extra columns)
+
+    Parameters
+    ----------
+    path  : path to the .parquet file
+    start : optional ISO date string — rows before this date are dropped
+    end   : optional ISO date string — rows after this date are dropped
+
+    Returns
+    -------
+    dict  {ticker: DataFrame with columns Open/High/Low/Close/Volume,
+                   DatetimeIndex sorted ascending}
+    """
+    df = pd.read_parquet(path)
+
+    # normalise column names: strip whitespace, lowercase for lookup
+    df.columns = df.columns.str.strip().str.lower()
+
+    if "date" not in df.columns:
+        raise ValueError("Parquet file must have a 'date' column.")
+    if "ticker" not in df.columns:
+        raise ValueError("Parquet file must have a 'ticker' column.")
+
+    # rename OHLCV columns to title-case expected by the rest of the pipeline
+    ohlcv_rename = {"open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume"}
+    df = df.rename(columns={k: v for k, v in ohlcv_rename.items() if k in df.columns})
+
+    df["date"] = pd.to_datetime(df["date"])
+
+    if start:
+        df = df[df["date"] >= pd.Timestamp(start)]
+    if end:
+        df = df[df["date"] <= pd.Timestamp(end)]
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Parquet file missing columns: {missing}")
+
+    result: dict[str, pd.DataFrame] = {}
+    for ticker, grp in df.groupby("ticker"):
+        ohlcv = (
+            grp.set_index("date")[required]
+            .sort_index()
+            .dropna()
+        )
+        if len(ohlcv) > 0:
+            result[str(ticker)] = ohlcv
+
+    logger.info("Loaded %d tickers from parquet: %s", len(result), path)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Normalisation (image scaling — see paper Section I)
 # ---------------------------------------------------------------------------
