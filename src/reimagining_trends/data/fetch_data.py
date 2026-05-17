@@ -30,6 +30,10 @@ DEFAULT_TICKERS = [
 IMAGE_WINDOWS = [5, 20, 60]
 RETURN_HORIZONS = [5, 20, 60]
 
+# Chronological split boundaries (aligned with ohlc_chart.py)
+DEFAULT_TRAIN_END = "2016-12-31"
+DEFAULT_VAL_END   = "2019-12-31"
+
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -124,6 +128,10 @@ def load_parquet(
     """
     df = pd.read_parquet(path)
 
+    # If date was saved as the DataFrame index, restore it as a column
+    if df.index.name is not None and "date" not in df.columns:
+        df = df.reset_index()
+
     # normalise column names: strip whitespace, lowercase for lookup
     df.columns = df.columns.str.strip().str.lower()
 
@@ -152,7 +160,8 @@ def load_parquet(
     result: dict[str, pd.DataFrame] = {}
     for ticker, grp in df.groupby("ticker"):
         ohlcv = (
-            grp.set_index("date")[required]
+            grp.drop_duplicates(subset=["date"], keep="last")
+            .set_index("date")[required]
             .sort_index()
             .dropna()
         )
@@ -251,9 +260,9 @@ def make_tabular_dataset(
     horizon: int,
     scaling: str = "image",
     add_ma: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Builds (X, y) for MLP and LSTM from a single OHLCV series.
+    Builds (X, y, returns) for MLP and LSTM from a single OHLCV series.
 
     Parameters
     ----------
@@ -265,9 +274,14 @@ def make_tabular_dataset(
 
     Returns
     -------
-    X : (n_samples, window, n_features)
-    y : (n_samples,)
+    X       : (n_samples, window, n_features)  float32
+    y       : (n_samples,)                     int64   binary label
+    returns : (n_samples,)                     float64 actual horizon-period return
+                                               (Close[t+h] / Close[t] - 1, original prices)
     """
+    # preserve original close BEFORE any scaling — used for real-return computation
+    original_close = _ensure_flat_columns(df)["Close"].copy()
+
     if add_ma:
         df = add_moving_average(df, window)
 
@@ -284,18 +298,131 @@ def make_tabular_dataset(
 
     df_scaled = df_scaled.join(labels).dropna()
 
-    X_list, y_list = [], []
+    # align original close to the rows surviving the scaling / label dropna
+    orig_cls = original_close.reindex(df_scaled.index).values
+
+    X_list, y_list, ret_list = [], [], []
     arr = df_scaled[feature_cols].values
     lbl = df_scaled[f"label_{horizon}d"].values
+    n   = len(arr)
 
-    for i in range(window, len(arr) - horizon):
+    for i in range(window, n - horizon):
         X_list.append(arr[i - window:i])
         y_list.append(lbl[i])
+        c0, ch = orig_cls[i], orig_cls[i + horizon]
+        ret_list.append(ch / c0 - 1 if (c0 > 0 and not np.isnan(c0) and not np.isnan(ch)) else np.nan)
 
     if not X_list:
-        return np.empty((0, window, len(feature_cols))), np.empty(0)
+        n_feat = len(feature_cols)
+        return np.empty((0, window, n_feat)), np.empty(0, dtype=np.int64), np.empty(0)
 
-    return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int64)
+    return (
+        np.array(X_list,  dtype=np.float32),
+        np.array(y_list,  dtype=np.int64),
+        np.array(ret_list, dtype=np.float64),
+    )
+
+
+def _ratio_split_tabular(
+    data: dict[str, pd.DataFrame],
+    window: int,
+    horizon: int,
+    scaling: str,
+    add_ma: bool,
+    train_ratio: float,
+    rng: np.random.Generator,
+) -> dict:
+    """Random ratio-based train/val/test split (fallback for short / synthetic data)."""
+    X_all, y_all, ret_all = [], [], []
+    for df in data.values():
+        X, y, returns = make_tabular_dataset(df, window, horizon, scaling, add_ma)
+        if len(X) > 0:
+            X_all.append(X)
+            y_all.append(y)
+            ret_all.append(returns)
+
+    if not X_all:
+        raise ValueError("No tabular samples generated — check data length, window, and horizon.")
+
+    X       = np.concatenate(X_all,   axis=0)
+    y       = np.concatenate(y_all,   axis=0)
+    returns = np.concatenate(ret_all, axis=0)
+
+    idx = rng.permutation(len(X))
+    X, y, returns = X[idx], y[idx], returns[idx]
+
+    n_train = int(len(X) * train_ratio)
+    n_val = (len(X) - n_train) // 2
+
+    return {
+        "X_train": X[:n_train],               "y_train": y[:n_train],
+        "X_val":   X[n_train:n_train + n_val], "y_val": y[n_train:n_train + n_val],
+        "X_test":  X[n_train + n_val:],        "y_test": y[n_train + n_val:],
+        "returns_train": returns[:n_train],
+        "returns_val":   returns[n_train:n_train + n_val],
+        "returns_test":  returns[n_train + n_val:],
+        "window": window, "horizon": horizon, "scaling": scaling,
+    }
+
+
+def _chronological_split_tabular(
+    data: dict[str, pd.DataFrame],
+    window: int,
+    horizon: int,
+    scaling: str,
+    add_ma: bool,
+    train_end: str,
+    val_end: str,
+    rng: np.random.Generator,
+) -> dict:
+    """Date-based train/val/test split — no look-ahead bias."""
+    buckets: dict[str, tuple[list, list, list]] = {
+        "train": ([], [], []),
+        "val":   ([], [], []),
+        "test":  ([], [], []),
+    }
+
+    for df in data.values():
+        splits = {
+            "train": df[df.index <= train_end],
+            "val":   df[(df.index > train_end) & (df.index <= val_end)],
+            "test":  df[df.index > val_end],
+        }
+        for split_name, df_split in splits.items():
+            if len(df_split) < window + horizon:
+                continue
+            X, y, returns = make_tabular_dataset(df_split, window, horizon, scaling, add_ma)
+            if len(X) > 0:
+                buckets[split_name][0].append(X)
+                buckets[split_name][1].append(y)
+                buckets[split_name][2].append(returns)
+
+    def _concat(key: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        X_list, y_list, ret_list = buckets[key]
+        if not X_list:
+            raise ValueError(
+                f"Tabular split '{key}' is empty. "
+                f"Check train_end='{train_end}', val_end='{val_end}'."
+            )
+        return np.concatenate(X_list), np.concatenate(y_list), np.concatenate(ret_list)
+
+    X_train, y_train, ret_train = _concat("train")
+    # shuffle only train to avoid order bias during SGD
+    idx = rng.permutation(len(X_train))
+    X_train, y_train, ret_train = X_train[idx], y_train[idx], ret_train[idx]
+
+    X_val,  y_val,  ret_val  = _concat("val")
+    X_test, y_test, ret_test = _concat("test")
+
+    return {
+        "X_train": X_train, "y_train": y_train,
+        "X_val":   X_val,   "y_val":   y_val,
+        "X_test":  X_test,  "y_test":  y_test,
+        "returns_train": ret_train,
+        "returns_val":   ret_val,
+        "returns_test":  ret_test,
+        "window": window, "horizon": horizon, "scaling": scaling,
+    }
 
 
 def make_multi_stock_dataset(
@@ -304,49 +431,64 @@ def make_multi_stock_dataset(
     horizon: int,
     scaling: str = "image",
     add_ma: bool = True,
+    train_end: Optional[str] = DEFAULT_TRAIN_END,
+    val_end: Optional[str] = DEFAULT_VAL_END,
     train_ratio: float = 0.7,
+    seed: int = 42,
 ) -> dict:
     """
-    Builds the full dataset (all tickers) and performs a
-    chronological train / val / test split.
+    Build the full tabular dataset (all tickers) with a train/val/test split.
 
-    Split used in the paper:
-      - Train + Val : 1993-2000
-      - Test        : 2001-2019
+    Split strategy
+    --------------
+    Chronological (default) — used when the data spans ``train_end`` and
+    ``val_end``:
+      • train : rows with index ≤ train_end
+      • val   : train_end < index ≤ val_end
+      • test  : index > val_end
 
-    Here adapted with a configurable ratio.
+    Ratio fallback — used when the data is too short or synthetic (e.g. tests):
+      • train / val / test proportions derived from ``train_ratio``
+
+    Parameters
+    ----------
+    data        : {ticker: OHLCV DataFrame}
+    window      : sequence length in trading days
+    horizon     : prediction horizon in trading days
+    scaling     : "image" | "cumret"
+    add_ma      : include moving-average feature
+    train_end   : last date of training set (ISO string)
+    val_end     : last date of validation set (ISO string)
+    train_ratio : fraction used for training when falling back to ratio split
+    seed        : RNG seed for reproducible shuffling
     """
-    X_all, y_all = [], []
+    rng = np.random.default_rng(seed)
 
-    for ticker, df in data.items():
-        X, y = make_tabular_dataset(df, window, horizon, scaling, add_ma)
-        if len(X) > 0:
-            X_all.append(X)
-            y_all.append(y)
+    # decide whether chronological split is viable
+    use_chrono = False
+    if train_end is not None and val_end is not None:
+        try:
+            has_dt_index = all(isinstance(df.index, pd.DatetimeIndex) for df in data.values())
+            if has_dt_index:
+                all_dates = pd.concat([df.index.to_series() for df in data.values()])
+                use_chrono = (
+                    all_dates.max() > pd.Timestamp(train_end)
+                    and all_dates.min() <= pd.Timestamp(train_end)
+                )
+        except Exception:
+            pass
 
-    if not X_all:
-        raise ValueError("No data available.")
+    if use_chrono:
+        logger.info(
+            "Tabular split: chronological (train≤%s | val≤%s | test>%s)",
+            train_end, val_end, val_end,
+        )
+        return _chronological_split_tabular(
+            data, window, horizon, scaling, add_ma, train_end, val_end, rng
+        )
 
-    X = np.concatenate(X_all, axis=0)
-    y = np.concatenate(y_all, axis=0)
-
-    idx = np.random.permutation(len(X))
-    X, y = X[idx], y[idx]
-
-    n_train = int(len(X) * train_ratio)
-    n_val = (len(X) - n_train) // 2
-
-    return {
-        "X_train": X[:n_train],
-        "y_train": y[:n_train],
-        "X_val":   X[n_train:n_train + n_val],
-        "y_val":   y[n_train:n_train + n_val],
-        "X_test":  X[n_train + n_val:],
-        "y_test":  y[n_train + n_val:],
-        "window":  window,
-        "horizon": horizon,
-        "scaling": scaling,
-    }
+    logger.info("Tabular split: ratio (train=%.0f%%)", train_ratio * 100)
+    return _ratio_split_tabular(data, window, horizon, scaling, add_ma, train_ratio, rng)
 
 
 # ---------------------------------------------------------------------------

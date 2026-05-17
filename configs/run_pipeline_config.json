@@ -1,6 +1,7 @@
 {
   "PIPELINE": {
     "TEST_MODE": true,
+    "TEST_SMALL_CRSP": true,
     "SEED": 42,
     "RESULTS_DIR": "results",
     "CHECKPOINTS_DIR": "checkpoints"
@@ -24,6 +25,8 @@
     "SCALING": "image",
     "INCLUDE_VOL": true,
     "INCLUDE_MA": true,
+    "TRAIN_END": "2016-12-31",
+    "VAL_END": "2019-12-31",
     "TRAIN_RATIO": 0.70,
     "VAL_RATIO": 0.15
   },
@@ -63,5 +66,15 @@
   "EVALUATION": {
     "N_DECILES": 10,
     "PERIODS_PER_YEAR": 52
+  },
+  "BACKTEST": {
+    "PORTFOLIO_TYPE": "both",
+    "WEIGHTING": "all",
+    "NEUTRALITY": ["sector", "beta"],
+    "BETA_WINDOW": 252,
+    "MIN_BETA_OBS": 126,
+    "COST_BPS": 10,
+    "BORROW_COST_BPS_PER_YEAR": 100,
+    "RF_PATH": "data/risk_free_returns.parquet"
   }
 }

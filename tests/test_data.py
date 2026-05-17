@@ -222,7 +222,7 @@ def test_make_labels_no_lookahead():
 # ---------------------------------------------------------------------------
 
 def test_tabular_dataset_shape(ohlcv_df):
-    X, y = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
+    X, y, returns = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
     assert X.ndim == 3
     assert X.shape[1] == WINDOW
     assert X.shape[0] == y.shape[0]
@@ -230,23 +230,30 @@ def test_tabular_dataset_shape(ohlcv_df):
 
 
 def test_tabular_dataset_dtype(ohlcv_df):
-    X, y = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
+    X, y, returns = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
     assert X.dtype == np.float32
     assert y.dtype == np.int64
+    assert returns.dtype == np.float64
 
 
 def test_tabular_dataset_labels_binary(ohlcv_df):
-    _, y = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
+    _, y, _ = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
     assert set(y.tolist()).issubset({0, 1})
 
 
 def test_tabular_dataset_feature_range(ohlcv_df):
     """image_scale should keep price features in [0, 1]."""
-    X, _ = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON, scaling="image")
+    X, _, _ = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON, scaling="image")
     # Price features (first 4 channels: O/H/L/C) should be in [0, 1]
     price = X[:, :, :4]
     assert price.min() >= -1e-6
     assert price.max() <= 1.0 + 1e-6
+
+
+def test_tabular_dataset_returns_shape(ohlcv_df):
+    X, y, returns = make_tabular_dataset(ohlcv_df, window=WINDOW, horizon=HORIZON)
+    assert returns.shape == (X.shape[0],)
+    assert np.isfinite(returns).any()
 
 
 # ---------------------------------------------------------------------------

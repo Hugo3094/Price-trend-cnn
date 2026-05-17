@@ -13,6 +13,15 @@ automatically so debug runs are fast:
   - epochs     → 2
   - patience   → 1
 
+When PIPELINE.TEST_SMALL_CRSP is true the pipeline switches to the
+small WRDS sample (2020-2024) with matching chronological split dates:
+  - data_source → "parquet"
+  - parquet_path → data/small_wrds_gross_query.parquet
+  - start/end   → 2020-01-01 / 2024-12-31
+  - train_end   → 2022-06-30
+  - val_end     → 2023-06-30
+Both flags can be combined (TEST_MODE speed + TEST_SMALL_CRSP data).
+
 Usage
 -----
     from reimagining_trends.utils.config import Config
@@ -33,6 +42,13 @@ _TEST_START   = "2021-01-01"
 _TEST_EPOCHS  = 2
 _TEST_PATIENCE = 1
 
+# Small CRSP sample overrides
+_SMALL_CRSP_PARQUET   = "data/small_wrds_gross_query.parquet"
+_SMALL_CRSP_START     = "2020-01-01"
+_SMALL_CRSP_END       = "2024-12-31"
+_SMALL_CRSP_TRAIN_END = "2022-06-30"
+_SMALL_CRSP_VAL_END   = "2023-06-30"
+
 
 class Config:
     """
@@ -41,6 +57,7 @@ class Config:
     PIPELINE
     --------
     test_mode        : bool   — fast debug run (2 tickers, 2 epochs)
+    test_small_crsp  : bool   — switch to small WRDS sample (2020-2024)
     seed             : int    — global random seed
     results_dir      : str    — directory for output figures
     checkpoints_dir  : str    — directory for model checkpoints
@@ -59,8 +76,10 @@ class Config:
     scaling          : str    — normalisation method ("image" | "cumret")
     include_vol      : bool   — include volume bars in OHLC images
     include_ma       : bool   — include moving-average overlay
-    train_ratio      : float  — fraction of data for training
-    val_ratio        : float  — fraction of data for validation
+    train_end        : str    — last date of training set for chronological split
+    val_end          : str    — last date of validation set for chronological split
+    train_ratio      : float  — fallback fraction for training (used when data is too short)
+    val_ratio        : float  — fallback fraction for validation
 
     TRAINING
     --------
@@ -107,6 +126,7 @@ class Config:
 
         # ── PIPELINE defaults ──────────────────────────────────────────────
         self.test_mode: bool = False
+        self.test_small_crsp: bool = False
         self.seed: int = 42
         self.results_dir: str = "results"
         self.checkpoints_dir: str = "checkpoints"
@@ -130,7 +150,9 @@ class Config:
         self.scaling: str = "image"
         self.include_vol: bool = True
         self.include_ma: bool = True
-        self.train_ratio: float = 0.70
+        self.train_end: str = "2016-12-31"
+        self.val_end: str = "2019-12-31"
+        self.train_ratio: float = 0.70   # used only when chronological split falls back
         self.val_ratio: float = 0.15
 
         # ── TRAINING defaults ──────────────────────────────────────────────
@@ -160,6 +182,16 @@ class Config:
         self.n_deciles: int = 10
         self.periods_per_year: int = 52
 
+        # ── BACKTEST defaults ──────────────────────────────────────────────
+        self.bt_portfolio_type: str = "both"
+        self.bt_weighting: str = "all"
+        self.bt_neutrality: list = ["sector", "beta"]
+        self.bt_beta_window: int = 252
+        self.bt_min_beta_obs: int = 126
+        self.bt_cost_bps: float = 10.0
+        self.bt_borrow_cost_bps_per_year: float = 100.0
+        self.bt_rf_path: Optional[str] = None
+
         self._load()
 
     # ------------------------------------------------------------------
@@ -176,6 +208,8 @@ class Config:
         pl = cfg.get("PIPELINE", {})
         if pl.get("TEST_MODE") is not None:
             self.test_mode = bool(pl["TEST_MODE"])
+        if pl.get("TEST_SMALL_CRSP") is not None:
+            self.test_small_crsp = bool(pl["TEST_SMALL_CRSP"])
         if pl.get("SEED") is not None:
             self.seed = int(pl["SEED"])
         if pl.get("RESULTS_DIR") is not None:
@@ -215,6 +249,10 @@ class Config:
             self.include_vol = bool(pp["INCLUDE_VOL"])
         if pp.get("INCLUDE_MA") is not None:
             self.include_ma = bool(pp["INCLUDE_MA"])
+        if pp.get("TRAIN_END") is not None:
+            self.train_end = pp["TRAIN_END"]
+        if pp.get("VAL_END") is not None:
+            self.val_end = pp["VAL_END"]
         if pp.get("TRAIN_RATIO") is not None:
             self.train_ratio = float(pp["TRAIN_RATIO"])
         if pp.get("VAL_RATIO") is not None:
@@ -280,13 +318,44 @@ class Config:
         if ev.get("PERIODS_PER_YEAR") is not None:
             self.periods_per_year = int(ev["PERIODS_PER_YEAR"])
 
-        # TEST_MODE overrides — applied last so they always win
+        # BACKTEST
+        bt = cfg.get("BACKTEST", {})
+        if bt.get("PORTFOLIO_TYPE") is not None:
+            self.bt_portfolio_type = bt["PORTFOLIO_TYPE"]
+        if bt.get("WEIGHTING") is not None:
+            self.bt_weighting = bt["WEIGHTING"]
+        if bt.get("NEUTRALITY") is not None:
+            self.bt_neutrality = list(bt["NEUTRALITY"])
+        if bt.get("BETA_WINDOW") is not None:
+            self.bt_beta_window = int(bt["BETA_WINDOW"])
+        if bt.get("MIN_BETA_OBS") is not None:
+            self.bt_min_beta_obs = int(bt["MIN_BETA_OBS"])
+        if bt.get("COST_BPS") is not None:
+            self.bt_cost_bps = float(bt["COST_BPS"])
+        if bt.get("BORROW_COST_BPS_PER_YEAR") is not None:
+            self.bt_borrow_cost_bps_per_year = float(bt["BORROW_COST_BPS_PER_YEAR"])
+        if bt.get("RF_PATH") is not None:
+            raw = bt["RF_PATH"]
+            p = Path(raw)
+            self.bt_rf_path = str(p if p.is_absolute() else self.ROOT_DIR / p)
+
+        # TEST_MODE overrides
         if self.test_mode:
             logger.info("TEST_MODE=True — overriding tickers/epochs/patience for fast run.")
-            self.tickers = _TEST_TICKERS
-            self.start   = _TEST_START
-            self.epochs  = _TEST_EPOCHS
+            self.tickers  = _TEST_TICKERS
+            self.start    = _TEST_START
+            self.epochs   = _TEST_EPOCHS
             self.patience = _TEST_PATIENCE
+
+        # TEST_SMALL_CRSP overrides — applied after TEST_MODE so dates always win
+        if self.test_small_crsp:
+            logger.info("TEST_SMALL_CRSP=True — switching to small WRDS sample (2020-2024).")
+            self.data_source  = "parquet"
+            self.parquet_path = str(self.ROOT_DIR / _SMALL_CRSP_PARQUET)
+            self.start        = _SMALL_CRSP_START
+            self.end          = _SMALL_CRSP_END
+            self.train_end    = _SMALL_CRSP_TRAIN_END
+            self.val_end      = _SMALL_CRSP_VAL_END
 
         logger.info(
             "Config loaded: %d tickers | window=%d | horizon=%d | epochs=%d",

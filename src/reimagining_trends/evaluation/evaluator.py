@@ -90,9 +90,10 @@ class Evaluator:
             y_true = ds["y_test"]
             metrics = compute_ml_metrics(y_true, y_pred, y_prob)
             self.results[name] = {
-                "y_true": y_true,
-                "y_pred": y_pred,
-                "y_proba": y_prob,
+                "y_true":   y_true,
+                "y_pred":   y_pred,
+                "y_proba":  y_prob,
+                "returns":  ds.get("returns_test"),
                 **metrics,
             }
             logger.info(
@@ -208,13 +209,17 @@ class Evaluator:
         if n == 1:
             axes = [axes]
         for ax, (name, res) in zip(axes, self.results.items()):
-            np.random.seed(self.cfg.seed)
-            y_true = res["y_true"]
-            ret_proxy = np.random.normal(0.001, 0.02, len(y_true))
-            ret_proxy[y_true == 1] += 0.003
+            y_true  = res["y_true"]
+            returns = res.get("returns")
+
+            if returns is None or np.all(np.isnan(returns)):
+                logger.warning("%s: no real returns available — skipping decile plot", name)
+                ax.set_title(f"{name}\n(no returns)", fontsize=11)
+                ax.axis("off")
+                continue
 
             dec = decile_portfolio_returns(
-                y_true, res["y_proba"], ret_proxy, n_deciles=self.cfg.n_deciles
+                y_true, res["y_proba"], returns, n_deciles=self.cfg.n_deciles
             )
             colors = ["#d73027" if v < 0 else "#1a9850" for v in dec["mean_return"]]
             ax.bar(dec.index, dec["mean_return"], color=colors, edgecolor="white")

@@ -259,8 +259,7 @@ def _ratio_split_image_dataset(
     height = specs["height"]
     width = specs["width"]
 
-    X_all = []
-    y_all = []
+    X_all, y_all, ret_all = [], [], []
 
     for _, df in data.items():
         df = _ensure_flat_columns(df).copy()
@@ -278,6 +277,7 @@ def _ratio_split_image_dataset(
             future_close = closes[i + horizon]
 
             label = int(future_close > current_close)
+            ret = future_close / current_close - 1 if current_close > 0 else np.nan
 
             img = generate_ohlc_image(
                 window_df,
@@ -288,15 +288,16 @@ def _ratio_split_image_dataset(
 
             X_all.append(img)
             y_all.append(label)
+            ret_all.append(ret)
 
     X = np.array(X_all, dtype=np.float32) / 255.0
     X = X[:, :, :, np.newaxis]
 
-    y = np.array(y_all, dtype=np.int64)
+    y       = np.array(y_all,   dtype=np.int64)
+    returns = np.array(ret_all, dtype=np.float64)
 
     idx = rng.permutation(len(X))
-    X = X[idx]
-    y = y[idx]
+    X, y, returns = X[idx], y[idx], returns[idx]
 
     n_train = int(len(X) * train_ratio)
     n_val = int(len(X) * val_ratio)
@@ -304,10 +305,13 @@ def _ratio_split_image_dataset(
     return {
         "X_train": X[:n_train],
         "y_train": y[:n_train],
-        "X_val": X[n_train:n_train + n_val],
-        "y_val": y[n_train:n_train + n_val],
-        "X_test": X[n_train + n_val:],
-        "y_test": y[n_train + n_val:],
+        "X_val":   X[n_train:n_train + n_val],
+        "y_val":   y[n_train:n_train + n_val],
+        "X_test":  X[n_train + n_val:],
+        "y_test":  y[n_train + n_val:],
+        "returns_train": returns[:n_train],
+        "returns_val":   returns[n_train:n_train + n_val],
+        "returns_test":  returns[n_train + n_val:],
         "image_shape": (height, width, 1),
         "window": window,
         "horizon": horizon,
@@ -375,9 +379,9 @@ def make_image_dataset(
     width = specs["width"]
 
     buckets = {
-        "train": ([], []),
-        "val": ([], []),
-        "test": ([], []),
+        "train": ([], [], []),
+        "val":   ([], [], []),
+        "test":  ([], [], []),
     }
 
     skipped = 0
@@ -412,6 +416,7 @@ def make_image_dataset(
                 future_close = closes[i + horizon]
 
                 label = int(future_close > current_close)
+                ret = future_close / current_close - 1 if current_close > 0 else np.nan
 
                 try:
                     img = generate_ohlc_image(
@@ -423,6 +428,7 @@ def make_image_dataset(
 
                     buckets[split_name][0].append(img)
                     buckets[split_name][1].append(label)
+                    buckets[split_name][2].append(ret)
 
                 except Exception:
                     skipped += 1
@@ -431,7 +437,7 @@ def make_image_dataset(
         logger.info("%d windows skipped", skipped)
 
     def concat_bucket(key: str):
-        X_list, y_list = buckets[key]
+        X_list, y_list, ret_list = buckets[key]
 
         if not X_list:
             raise ValueError(
@@ -442,18 +448,19 @@ def make_image_dataset(
 
         X = np.array(X_list, dtype=np.float32) / 255.0
         X = X[:, :, :, np.newaxis]
+        y       = np.array(y_list,   dtype=np.int64)
+        returns = np.array(ret_list, dtype=np.float64)
 
-        y = np.array(y_list, dtype=np.int64)
+        return X, y, returns
 
-        return X, y
-
-    X_train, y_train = concat_bucket("train")
-    X_val, y_val = concat_bucket("val")
-    X_test, y_test = concat_bucket("test")
+    X_train, y_train, ret_train = concat_bucket("train")
+    X_val,   y_val,   ret_val   = concat_bucket("val")
+    X_test,  y_test,  ret_test  = concat_bucket("test")
 
     idx = rng.permutation(len(X_train))
     X_train = X_train[idx]
     y_train = y_train[idx]
+    ret_train = ret_train[idx]
 
     if verbose:
         for split_name, X, y in [
@@ -471,10 +478,13 @@ def make_image_dataset(
     return {
         "X_train": X_train,
         "y_train": y_train,
-        "X_val": X_val,
-        "y_val": y_val,
-        "X_test": X_test,
-        "y_test": y_test,
+        "X_val":   X_val,
+        "y_val":   y_val,
+        "X_test":  X_test,
+        "y_test":  y_test,
+        "returns_train": ret_train,
+        "returns_val":   ret_val,
+        "returns_test":  ret_test,
         "image_shape": (height, width, 1),
         "window": window,
         "horizon": horizon,

@@ -122,7 +122,10 @@ class DataManager:
             horizon=self.cfg.horizon,
             scaling=self.cfg.scaling,
             add_ma=self.cfg.include_ma,
+            train_end=self.cfg.train_end,
+            val_end=self.cfg.val_end,
             train_ratio=self.cfg.train_ratio,
+            seed=self.cfg.seed,
         )
         self._log_split_sizes("tabular", ds)
         return ds
@@ -156,8 +159,10 @@ class DataManager:
             horizon=self.cfg.horizon,
             include_vol=self.cfg.include_vol,
             include_ma=self.cfg.include_ma,
-            train_ratio=self.cfg.train_ratio,
+            train_end=self.cfg.train_end,
+            val_end=self.cfg.val_end,
             val_ratio=self.cfg.val_ratio,
+            seed=self.cfg.seed,
         )
         self._log_split_sizes("image", ds)
         return ds

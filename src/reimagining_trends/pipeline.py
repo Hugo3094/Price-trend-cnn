@@ -90,6 +90,7 @@ class Pipeline:
             self._section_interpretability()
 
         self._section_transfer_learning()
+        self._section_backtest()
         self._section_summary()
 
     # ------------------------------------------------------------------
@@ -339,6 +340,16 @@ class Pipeline:
         plt.tight_layout()
         self._save_fig("transfer_learning.png")
         logger.info("-> Figure: %s", self._path("transfer_learning.png"))
+
+    def _section_backtest(self) -> None:
+        logger.info("=" * 60)
+        logger.info("9. Backtesting")
+        logger.info("=" * 60)
+
+        from reimagining_trends.backtest.backtester import Backtester
+
+        bt = Backtester(self.cfg, self.raw_data, self.trainers)
+        bt.run()
 
     def _section_summary(self) -> None:
         logger.info("=" * 60)
