@@ -108,23 +108,28 @@ def load_parquet(
     path: str,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    permnos: Optional[list] = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Loads OHLCV data from a WRDS-style long-format Parquet file.
 
     Expected schema (case-insensitive):
-      date, ticker, open, high, low, close, volume  (+ optional extra columns)
+      date, permno, open, high, low, close, volume  (+ optional extra columns)
+
+    ``permno`` (CRSP permanent number) is the primary identifier.  If the file
+    has no ``permno`` column the function falls back to ``ticker`` with a warning.
 
     Parameters
     ----------
-    path  : path to the .parquet file
-    start : optional ISO date string — rows before this date are dropped
-    end   : optional ISO date string — rows after this date are dropped
+    path    : path to the .parquet file
+    start   : optional ISO date string — rows before this date are dropped
+    end     : optional ISO date string — rows after this date are dropped
+    permnos : optional list of PERMNOs to load (None = load all)
 
     Returns
     -------
-    dict  {ticker: DataFrame with columns Open/High/Low/Close/Volume,
-                   DatetimeIndex sorted ascending}
+    dict  {str(permno): DataFrame with columns Open/High/Low/Close/Volume,
+                        DatetimeIndex sorted ascending}
     """
     df = pd.read_parquet(path)
 
@@ -137,8 +142,15 @@ def load_parquet(
 
     if "date" not in df.columns:
         raise ValueError("Parquet file must have a 'date' column.")
-    if "ticker" not in df.columns:
-        raise ValueError("Parquet file must have a 'ticker' column.")
+
+    # Determine the security identifier column — prefer permno (CRSP stable ID)
+    if "permno" in df.columns:
+        id_col = "permno"
+    elif "ticker" in df.columns:
+        id_col = "ticker"
+        logger.warning("No 'permno' column found — falling back to 'ticker' as identifier.")
+    else:
+        raise ValueError("Parquet file must have a 'permno' or 'ticker' column.")
 
     # rename OHLCV columns to title-case expected by the rest of the pipeline
     ohlcv_rename = {"open": "Open", "high": "High", "low": "Low",
@@ -152,13 +164,18 @@ def load_parquet(
     if end:
         df = df[df["date"] <= pd.Timestamp(end)]
 
+    # Optional PERMNO filter
+    if permnos is not None:
+        pset = {str(p) for p in permnos}
+        df = df[df[id_col].astype(str).isin(pset)]
+
     required = ["Open", "High", "Low", "Close", "Volume"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Parquet file missing columns: {missing}")
 
     result: dict[str, pd.DataFrame] = {}
-    for ticker, grp in df.groupby("ticker"):
+    for id_val, grp in df.groupby(id_col):
         ohlcv = (
             grp.drop_duplicates(subset=["date"], keep="last")
             .set_index("date")[required]
@@ -166,9 +183,9 @@ def load_parquet(
             .dropna()
         )
         if len(ohlcv) > 0:
-            result[str(ticker)] = ohlcv
+            result[str(id_val)] = ohlcv
 
-    logger.info("Loaded %d tickers from parquet: %s", len(result), path)
+    logger.info("Loaded %d securities (%s) from parquet: %s", len(result), id_col, path)
     return result
 
 

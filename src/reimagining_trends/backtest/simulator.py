@@ -134,6 +134,7 @@ def simulate_portfolio(
             r_day = daily_returns.loc[d]
             if isinstance(r_day, pd.DataFrame):
                 r_day = r_day.iloc[0]
+            r_day = r_day.fillna(0.0)  # NaN return (halt/delisting) → 0 for P&L computation
             r_gross = float(sum(w * float(r_day.get(t, 0.0)) for t, w in weights.items()))
             short_w = sum(abs(w) for w in weights.values() if w < 0)
             r_borrow = borrow_rate_daily * short_w

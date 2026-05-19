@@ -9,12 +9,7 @@
   "DATA": {
     "DATA_SOURCE": "parquet",
     "PARQUET_PATH": "data/wrds_gross_query.parquet",
-    "TICKERS": [
-      "AAPL", "MSFT", "GOOGL", "AMZN", "META",
-      "TSLA", "JPM", "GS", "BAC", "WMT",
-      "XOM", "CVX", "JNJ", "PFE", "KO",
-      "PEP", "NVDA", "AMD", "INTC", "CSCO"
-    ],
+    "PERMNOS": null,
     "START": "2010-01-01",
     "END": "2022-12-31",
     "SAVE_DIR": null
@@ -75,6 +70,7 @@
     "MIN_BETA_OBS": 126,
     "COST_BPS": 10,
     "BORROW_COST_BPS_PER_YEAR": 100,
-    "RF_PATH": "data/risk_free_returns.parquet"
+    "RF_PATH": "data/risk_free_returns.parquet",
+    "BENCHMARKS": ["MOM", "STR", "WSTR"]
   }
 }

@@ -45,24 +45,30 @@ class Backtester:
         os.makedirs(config.results_dir, exist_ok=True)
 
         # populated in _load_aux_data / _build_panels
-        self._rf: pd.Series          = pd.Series(dtype=float)
-        self._mktcap: pd.DataFrame   = pd.DataFrame()  # date x ticker
-        self._sectors: dict          = {}               # ticker → gsector int
-        self._daily_ret: pd.DataFrame = pd.DataFrame() # date x ticker
-        self._betas: pd.DataFrame    = pd.DataFrame()  # date x ticker
-        self._benchmark: pd.Series   = pd.Series(dtype=float)
+        self._rf: pd.Series           = pd.Series(dtype=float)
+        self._mktcap: pd.DataFrame    = pd.DataFrame()  # date x permno
+        self._sectors: pd.DataFrame   = pd.DataFrame()  # date x permno (point-in-time gsector)
+        self._daily_ret: pd.DataFrame = pd.DataFrame()  # date x permno
+        self._betas: pd.DataFrame     = pd.DataFrame()  # date x permno
+        self._benchmark: pd.Series    = pd.Series(dtype=float)
+
+        # benchmark signal panels (date x permno), populated in _precompute_signal_panels
+        self._signal_mom:  pd.DataFrame = pd.DataFrame()
+        self._signal_str:  pd.DataFrame = pd.DataFrame()
+        self._signal_wstr: pd.DataFrame = pd.DataFrame()
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
     def run(self) -> dict:
-        """Run all backtests; return nested results dict."""
+        """Run all backtests (models + benchmarks); return nested results dict."""
         logger.info("Backtest: loading auxiliary data …")
         self._load_aux_data()
         self._build_panels()
         self._build_benchmark()
         self._compute_betas()
+        self._precompute_signal_panels()
 
         weightings = (
             ["equal", "proportional", "cap_weighted"]
@@ -77,6 +83,7 @@ class Backtester:
 
         all_results: dict = {}
 
+        # ── Model strategies ──────────────────────────────────────────────
         for model_name, trainer in self.trainers.items():
             trainer.load_best()
             mtype = _MODEL_TYPE.get(model_name, "mlp")
@@ -103,6 +110,31 @@ class Backtester:
                     except Exception as exc:
                         logger.warning(
                             "Backtest %s failed: %s\n%s",
+                            key, exc, traceback.format_exc(),
+                        )
+
+        # ── Benchmark strategies (MOM, STR, WSTR) ─────────────────────────
+        benchmarks = getattr(self.cfg, "bt_benchmarks", ["MOM", "STR", "WSTR"])
+        for bench_name in benchmarks:
+            bench_scores = self._benchmark_scores_for(bench_name)
+            for weighting in weightings:
+                for port_type in port_types:
+                    key = f"{bench_name}_{weighting}_{port_type}"
+                    logger.info("Benchmark backtest: %s", key)
+                    try:
+                        result = self._single_backtest(bench_scores, weighting, port_type)
+                        all_results[key] = result
+                        m = result["metrics"]
+                        logger.info(
+                            "  net_sharpe=%.3f | net_ann_ret=%.3f | MDD=%.3f | IR=%.3f",
+                            m.get("net_sharpe", np.nan),
+                            m.get("net_ann_return", np.nan),
+                            m.get("net_max_drawdown", np.nan),
+                            m.get("net_IR", np.nan),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Benchmark backtest %s failed: %s\n%s",
                             key, exc, traceback.format_exc(),
                         )
 
@@ -144,20 +176,24 @@ class Backtester:
         df.columns = df.columns.str.strip().str.lower()
         df["date"] = pd.to_datetime(df["date"])
 
+        id_col = "permno" if "permno" in df.columns else "ticker"
+
         if "market_cap" in df.columns:
-            self._mktcap = (
-                df.pivot_table(index="date", columns="ticker", values="market_cap")
+            mktcap = (
+                df.pivot_table(index="date", columns=id_col, values="market_cap")
                 .sort_index()
             )
+            mktcap.columns = mktcap.columns.astype(str)
+            self._mktcap = mktcap
 
         if "gsector" in df.columns:
-            raw = df.groupby("ticker")["gsector"].first()
-            self._sectors = {}
-            for ticker, val in raw.items():
-                try:
-                    self._sectors[ticker] = int(val)
-                except (ValueError, TypeError):
-                    pass
+            sectors_pivot = (
+                df.pivot_table(index="date", columns=id_col, values="gsector", aggfunc="last")
+                .sort_index()
+            )
+            sectors_pivot.columns = sectors_pivot.columns.astype(str)
+            # Convert string codes (e.g. "10") to numeric; keep NaN where missing
+            self._sectors = sectors_pivot.apply(pd.to_numeric, errors="coerce")
 
     def _build_panels(self) -> None:
         """Build daily returns panel from raw_data."""
@@ -165,7 +201,7 @@ class Backtester:
         for ticker, df in self.raw_data.items():
             df = _ensure_flat_columns(df)
             frames[ticker] = df["Close"].pct_change()
-        daily = pd.DataFrame(frames).sort_index().fillna(0.0)
+        daily = pd.DataFrame(frames).sort_index()
         if daily.index.duplicated().any():
             daily = daily[~daily.index.duplicated(keep="last")]
         self._daily_ret = daily
@@ -180,7 +216,8 @@ class Backtester:
         # Lag market cap by 1 day to avoid look-ahead
         mktcap_lag = self._mktcap.shift(1).reindex(self._daily_ret.index)
         aligned = mktcap_lag.reindex(columns=self._daily_ret.columns)
-        w = aligned.div(aligned.sum(axis=1), axis=0).fillna(0.0)
+        # Keep NaN weights — sum(skipna=True) excludes NaN contributions naturally
+        w = aligned.div(aligned.sum(axis=1), axis=0)
         self._benchmark = (w * self._daily_ret).sum(axis=1)
 
     def _compute_betas(self) -> None:
@@ -198,6 +235,46 @@ class Backtester:
             betas[ticker] = (cov / var.replace(0, np.nan))
 
         self._betas = pd.DataFrame(betas).sort_index()
+
+    def _precompute_signal_panels(self) -> None:
+        """Compute MOM / STR / WSTR signal panels (date × permno) once."""
+        # fillna(0.0) only here, at computation time — not stored in _daily_ret
+        log_ret = np.log1p(self._daily_ret.fillna(0.0))
+
+        r252 = log_ret.rolling(252, min_periods=126).sum()  # ~12 months
+        r42  = log_ret.rolling(42,  min_periods=21).sum()   # ~2 months
+        r21  = log_ret.rolling(21,  min_periods=15).sum()   # ~1 month
+        r5   = log_ret.rolling(5,   min_periods=3).sum()    # ~1 week
+
+        self._signal_mom  = r252 - r42  # 2-12 month: high = past winner → long
+        self._signal_str  = -r21        # negated 1-month: high = past loser → long (reversal)
+        self._signal_wstr = -r5         # negated 1-week:  high = past loser → long (reversal)
+
+        logger.info(
+            "Signal panels ready: MOM %s, STR %s, WSTR %s",
+            self._signal_mom.shape, self._signal_str.shape, self._signal_wstr.shape,
+        )
+
+    def _benchmark_scores_for(self, signal_name: str) -> dict:
+        """
+        Return scores_by_date for a benchmark signal on the same rebalancing
+        grid used by models (every h trading days in the test period).
+        """
+        panel = {"MOM": self._signal_mom, "STR": self._signal_str, "WSTR": self._signal_wstr}[signal_name]
+
+        test_dates = self._daily_ret.index[self._daily_ret.index > self.cfg.val_end]
+        reb_dates  = test_dates[::self.cfg.horizon]
+
+        scores_by_date: dict = {}
+        for t in reb_dates:
+            if t not in panel.index:
+                continue
+            row = panel.loc[t]
+            scores = {str(col): float(v) for col, v in row.items() if not np.isnan(v)}
+            if scores:
+                scores_by_date[t] = scores
+
+        return scores_by_date
 
     # ------------------------------------------------------------------
     # Signal generation
@@ -324,12 +401,13 @@ class Backtester:
 
             betas_at_t     = self._betas_at(sig_t)
             mktcap_at_t    = self._mktcap_at(sig_t)
+            sectors_at_t   = self._sectors_at(sig_t)
 
             if port_type == "LS":
                 weights = construct_ls_portfolio(
                     scores      = scores,
                     market_caps = mktcap_at_t,
-                    sectors     = self._sectors,
+                    sectors     = sectors_at_t,
                     betas       = betas_at_t,
                     n_decile    = n_decile,
                     weighting   = weighting,
@@ -365,6 +443,24 @@ class Backtester:
         row = rows.iloc[-2]  # one day before t
         return {ticker: float(v) for ticker, v in row.items() if not np.isnan(v)}
 
+    def _sectors_at(self, t) -> dict:
+        """Point-in-time sector: most recent gsector for each security as of date t."""
+        if self._sectors.empty:
+            return {}
+        rows = self._sectors.loc[:t]
+        if rows.empty:
+            return {}
+        # Forward-fill within the slice: sector changes are sparse
+        row = rows.ffill().iloc[-1]
+        result = {}
+        for id_val, val in row.items():
+            if not pd.isna(val):
+                try:
+                    result[str(id_val)] = int(val)
+                except (ValueError, TypeError):
+                    pass
+        return result
+
     # ------------------------------------------------------------------
     # Plotting
     # ------------------------------------------------------------------
@@ -374,15 +470,23 @@ class Backtester:
         self._plot_metrics_table(results)
 
     def _plot_cumulative(self, results: dict) -> None:
+        _BENCHMARK_NAMES = {"MOM", "STR", "WSTR"}
         fig, ax = plt.subplots(figsize=(12, 5))
         for key, res in results.items():
             sim = res["sim"]
-            ax.plot(sim.index, sim["portfolio_value_net"], label=key, lw=1.2)
+            is_bench = key.split("_")[0] in _BENCHMARK_NAMES
+            ax.plot(
+                sim.index, sim["portfolio_value_net"],
+                label=key,
+                lw=1.5 if is_bench else 1.0,
+                ls="--" if is_bench else "-",
+                alpha=0.85,
+            )
         ax.set_title("Cumulative portfolio value (net of costs)")
         ax.set_xlabel("Date")
         ax.set_ylabel("Portfolio value (start = 1)")
-        ax.axhline(1.0, color="black", lw=0.8, ls="--")
-        ax.legend(fontsize=7, ncol=2)
+        ax.axhline(1.0, color="black", lw=0.8, ls=":")
+        ax.legend(fontsize=7, ncol=3)
         ax.grid(alpha=0.3)
         plt.tight_layout()
         path = os.path.join(self.cfg.results_dir, "backtest_cumulative.png")

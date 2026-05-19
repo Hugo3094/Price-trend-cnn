@@ -64,11 +64,12 @@ class DataManager:
                 self.cfg.parquet_path,
                 start=self.cfg.start,
                 end=self.cfg.end,
+                permnos=self.cfg.permnos,
             )
             if self.cfg.test_mode:
                 keys = list(self.raw_data.keys())[:2]
                 self.raw_data = {k: self.raw_data[k] for k in keys}
-                logger.info("TEST_MODE: limited to %d tickers from parquet.", len(self.raw_data))
+                logger.info("TEST_MODE: limited to %d securities from parquet.", len(self.raw_data))
         else:
             logger.info(
                 "Downloading %d tickers from Yahoo Finance (%s → %s)",
@@ -81,7 +82,7 @@ class DataManager:
                 save_dir=self.cfg.data_save_dir,
             )
 
-        logger.info("Data loaded: %d tickers.", len(self.raw_data))
+        logger.info("Data loaded: %d securities.", len(self.raw_data))
         return self.raw_data
 
     def load(self, data_dir: str) -> dict[str, pd.DataFrame]:

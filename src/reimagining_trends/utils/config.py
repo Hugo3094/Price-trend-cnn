@@ -134,6 +134,7 @@ class Config:
         # ── DATA defaults ──────────────────────────────────────────────────
         self.data_source: str = "yahoo"   # "yahoo" | "parquet"
         self.parquet_path: Optional[str] = None
+        self.permnos: Optional[List] = None  # if set, restrict parquet load to these PERMNOs
         self.tickers: List[str] = [
             "AAPL", "MSFT", "GOOGL", "AMZN", "META",
             "TSLA", "JPM", "GS", "BAC", "WMT",
@@ -191,6 +192,7 @@ class Config:
         self.bt_cost_bps: float = 10.0
         self.bt_borrow_cost_bps_per_year: float = 100.0
         self.bt_rf_path: Optional[str] = None
+        self.bt_benchmarks: List[str] = ["MOM", "STR", "WSTR"]
 
         self._load()
 
@@ -228,6 +230,8 @@ class Config:
                 self.parquet_path = str(p if p.is_absolute() else self.ROOT_DIR / p)
             else:
                 self.parquet_path = None
+        if "PERMNOS" in d and d["PERMNOS"] is not None:
+            self.permnos = list(d["PERMNOS"])
         if d.get("TICKERS"):
             self.tickers = list(d["TICKERS"])
         if d.get("START") is not None:
@@ -338,6 +342,8 @@ class Config:
             raw = bt["RF_PATH"]
             p = Path(raw)
             self.bt_rf_path = str(p if p.is_absolute() else self.ROOT_DIR / p)
+        if bt.get("BENCHMARKS") is not None:
+            self.bt_benchmarks = list(bt["BENCHMARKS"])
 
         # TEST_MODE overrides
         if self.test_mode:
