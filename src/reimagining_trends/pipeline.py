@@ -67,8 +67,15 @@ class Pipeline:
         self.img_ds:   dict = {}
         self.trainers: dict[str, Trainer] = {}
 
-        os.makedirs(config.results_dir,    exist_ok=True)
+        config.results_dir = os.path.join(config.results_dir, config.run_hash)
+        config.checkpoints_dir = os.path.join(config.checkpoints_dir, config.run_hash)
+
+        os.makedirs(config.results_dir, exist_ok=True)
         os.makedirs(config.checkpoints_dir, exist_ok=True)
+
+        logger.info("Run hash: %s", config.run_hash)
+        logger.info("Results dir: %s", config.results_dir)
+        logger.info("Checkpoints dir: %s", config.checkpoints_dir)
 
     # ------------------------------------------------------------------
     # Public API
@@ -377,5 +384,8 @@ class Pipeline:
         plt.close()
 
     def _build_trainer(self, model, model_type: str, name: str) -> Trainer:
-        save_dir = os.path.join(self.cfg.checkpoints_dir, f"{name.lower()}_w{self.cfg.window}")
+        save_dir = os.path.join(
+            self.cfg.checkpoints_dir,
+            f"{name.lower()}_w{self.cfg.window}",
+        )
         return Trainer(model, model_type, save_dir=save_dir, device=self.device)
