@@ -29,6 +29,7 @@ Usage
     cfg = Config("path/to/other.json")   # custom path
 """
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -195,6 +196,34 @@ class Config:
         self.bt_benchmarks: List[str] = ["MOM", "STR", "WSTR"]
 
         self._load()
+        self.run_hash = self._compute_hash()
+
+
+    def _compute_hash(self) -> str:
+        """Compute a short hash identifying the current experiment config."""
+        payload = {
+            "data_source": self.data_source,
+            "parquet_path": self.parquet_path,
+            "permnos": self.permnos,
+            "start": self.start,
+            "end": self.end,
+            "window": self.window,
+            "horizon": self.horizon,
+            "scaling": self.scaling,
+            "include_vol": self.include_vol,
+            "include_ma": self.include_ma,
+            "train_end": self.train_end,
+            "val_end": self.val_end,
+            "models": self.models_to_train,
+            "epochs": self.epochs,
+            "batch_size": self.batch_size,
+            "lr": self.lr,
+            "weight_decay": self.weight_decay,
+            "seed": self.seed,
+        }
+
+        payload_str = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.md5(payload_str.encode("utf-8")).hexdigest()[:8]
 
     # ------------------------------------------------------------------
     def _load(self) -> None:
